@@ -94,10 +94,10 @@ Giọng nói người dùng
 
 * **Loss Function**
 
-L_total = α * L_classification + β * L_kld + γ * L_reconstruction
-L_classification = BCE(y_true, y_pred)
-L_reconstruction = MSE(x_true, x_reconstructed)
-L_kld = -0.5 * Σ(1 + log_var - μ² - exp(log_var))
+* L_total = α * L_classification + β * L_kld + γ * L_reconstruction
+* L_classification = BCE(y_true, y_pred)
+* L_reconstruction = MSE(x_true, x_reconstructed)
+* L_kld = -0.5 * Σ(1 + log_var - μ² - exp(log_var))
 
 ---
 
