@@ -1,0 +1,5 @@
+Version Alpha 1.0.0
+// Date: 2024-06-15
+    Kích thước latent_dim (32, 64, 128).
+    Chiều dài chuỗi đầu vào cho LSTM (ở phần decoder đang giả định = 10, thay bằng T từ spectrogram thật).
+    Các trọng số α, β, γ để cân bằng loss.
