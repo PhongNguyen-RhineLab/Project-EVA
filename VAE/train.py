@@ -1,18 +1,21 @@
 from model import BetaVAE_SER, beta_vae_loss
 import torch
 import torch.optim as optim
-from torch.utils.data import DataLoader, TensorDataset
+from dataset import EmotionDataset
+from torch.utils.data import DataLoader
 
 # --------------------------
-# Fake Dataset (demo)
+# Dataset
 # --------------------------
-# Input: Mel spectrogram giả định (B,1,128,64)
-# Label: multi-label cảm xúc (B,8)
-X_fake = torch.randn(200, 1, 128, 64)
-Y_fake = torch.randint(0, 2, (200, 8)).float()
-
-train_dataset = TensorDataset(X_fake[:160], Y_fake[:160])
-val_dataset   = TensorDataset(X_fake[160:], Y_fake[160:])
+# Khai báo dataset
+train_dataset = EmotionDataset(
+    audio_dir="EVA_Dataset/processed_audio",
+    label_file="EVA_Dataset/labels/train_labels.csv"
+)
+val_dataset = EmotionDataset(
+    audio_dir="EVA_Dataset/processed_audio",
+    label_file="EVA_Dataset/labels/val_labels.csv"
+)
 
 train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
 val_loader   = DataLoader(val_dataset, batch_size=16)
