@@ -4,6 +4,7 @@ import librosa
 import soundfile as sf
 import numpy as np
 import pandas as pd
+import re
 
 RAW_DIR = "Dataset/raw_downloads"
 PROC_DIR = "Dataset/processed_audio"
@@ -86,9 +87,16 @@ def prepare_dataset(youtube_urls):
     for url in youtube_urls:
         # download
         download_youtube_audio(url)
-        # lấy id video từ URL (sau dấu =)
-        video_id = url.split("v=")[-1]
+
+        # Sử dụng hàm extract_youtube_id để lấy video_id
+        video_id = extract_youtube_id(url)
+
         raw_path = os.path.join(RAW_DIR, f"{video_id}.wav")
+
+        # Check if file exists before processing
+        if not os.path.exists(raw_path):
+            print(f"Warning: Downloaded file not found at {raw_path}")
+            continue
 
         # process audio
         rows = process_audio_file(raw_path, video_id)
@@ -98,10 +106,38 @@ def prepare_dataset(youtube_urls):
     out_csv = os.path.join(LABELS_DIR, "labels_template.csv")
     generate_labels_template(all_rows, out_csv)
 
+def extract_youtube_id(url):
+    """
+    Trích xuất video_id từ nhiều dạng URL YouTube khác nhau.
+    """
+    # Các pattern phổ biến của YouTube
+    patterns = [
+        r"(?:v=|\/videos\/|embed\/|youtu\.be\/|\/shorts\/)([A-Za-z0-9_-]{11})",
+        r"youtube\.com\/watch\?.*?v=([A-Za-z0-9_-]{11})",
+        r"youtube\.com\/shorts\/([A-Za-z0-9_-]{11})",
+        r"youtu\.be\/([A-Za-z0-9_-]{11})"
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1)
+    # fallback - use a hash of the URL
+    import hashlib
+    return hashlib.md5(url.encode()).hexdigest()[:11]
+
 if __name__ == "__main__":
     # Danh sách URL YouTube
     urls = [
-        "https://www.youtube.com/watch?v=YOUR_VIDEO_ID1",
-        "https://www.youtube.com/watch?v=YOUR_VIDEO_ID2"
+        "https://youtube.com/shorts/iph2e7fwB9M?si=yaOISLd1fMm_OI3f",
+        "https://youtube.com/shorts/SNqfINV4_8I?si=c-dfPsHjYgsCXO7P",
+        "https://youtube.com/shorts/v4ZLu4FfkhE?si=rIM4q5CuyBkoTzno",
+        "https://youtube.com/shorts/vMj4om6wr2s?si=oa_4-F_QteZ8mzjK",
+        "https://youtube.com/shorts/99aU7NAGvfk?si=tj8Y0MWztMXlu9HY",
+        "https://youtube.com/shorts/p3RnM-_Ry_o?si=9QSyHyGFo8GESYj2",
+        "https://youtube.com/shorts/cRU8U2-5Yd8?si=c03mDqJZODTM3410",
+        "https://youtube.com/shorts/6QANmTjo8JE?si=bJTrIDq-5avCb4U7",
+        "https://youtube.com/shorts/ftoFLOg3HKw?si=q3VShACIcEzQHDDP",
+        "https://youtube.com/shorts/oFtWhnjwyV8?si=9sJs5b3Fj51RDFt3",
+        "https://youtube.com/shorts/uGwTE0issZE?si=85V_VzdoYFMqAUat",
     ]
     prepare_dataset(urls)
