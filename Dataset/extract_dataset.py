@@ -1,47 +1,3 @@
-def extract_ravdess(zip_path, output_dir):
-    """
-    Extract RAVDESS dataset
-    """
-    print_header("📦 EXTRACTING RAVDESS")
-
-    os.makedirs(output_dir, exist_ok=True)
-
-    # Check if already extracted
-    existing_wavs = list(Path(output_dir).rglob('*.wav'))
-    if len(existing_wavs) > 1400:
-        print_success(f"RAVDESS already extracted! ({len(existing_wavs)} files)")
-        return True
-
-    print_info(f"Source: {zip_path}")
-    print_info(f"Destination: {output_dir}")
-
-    try:
-        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            # Get list of files
-            members = zip_ref.namelist()
-            wav_members = [m for m in members if m.lower().endswith('.wav')]
-
-            print_info(f"Found {len(wav_members)} .wav files in archive")
-
-            # Extract with progress bar
-            for member in tqdm(members, desc="Extracting"):
-                try:
-                    zip_ref.extract(member, output_dir)
-                except Exception as e:
-                    # Skip problematic files
-                    continue
-
-        # Verify extraction
-        extracted_wavs = list(Path(output_dir).rglob('*.wav'))
-        print_success(f"Extracted {len(extracted_wavs)} .wav files")
-
-        return True
-
-    except Exception as e:
-        print_error(f"Extraction failed: {e}")
-        return False
-
-
 """
 Extract and Organize Manually Downloaded Datasets
 For TESS and CREMA-D zip files already in project
@@ -56,7 +12,6 @@ import shutil
 # Configuration
 OUTPUT_BASE = 'Dataset/prelabel_en'
 
-
 class Colors:
     GREEN = '\033[92m'
     YELLOW = '\033[93m'
@@ -65,23 +20,19 @@ class Colors:
     RESET = '\033[0m'
     BOLD = '\033[1m'
 
-
 def print_success(text):
     print(f"{Colors.GREEN}✓ {text}{Colors.RESET}")
-
 
 def print_error(text):
     print(f"{Colors.RED}✗ {text}{Colors.RESET}")
 
-
 def print_info(text):
     print(f"{Colors.BLUE}ℹ {text}{Colors.RESET}")
 
-
 def print_header(text):
-    print(f"\n{Colors.BOLD}{Colors.BLUE}{'=' * 70}{Colors.RESET}")
+    print(f"\n{Colors.BOLD}{Colors.BLUE}{'='*70}{Colors.RESET}")
     print(f"{Colors.BOLD}{Colors.BLUE}{text}{Colors.RESET}")
-    print(f"{Colors.BOLD}{Colors.BLUE}{'=' * 70}{Colors.RESET}\n")
+    print(f"{Colors.BOLD}{Colors.BLUE}{'='*70}{Colors.RESET}\n")
 
 
 def find_zip_files(search_dirs=None):
@@ -91,10 +42,10 @@ def find_zip_files(search_dirs=None):
     if search_dirs is None:
         # Search in common locations
         search_dirs = [
-            '.',  # Project root
-            'Dataset',  # Dataset folder
-            'Dataset/manual',  # Manual downloads
-            'downloads',  # Downloads folder
+            '.',                    # Project root
+            'Dataset',              # Dataset folder
+            'Dataset/manual',       # Manual downloads
+            'downloads',            # Downloads folder
             os.path.expanduser('~/Downloads'),  # User downloads
         ]
 
@@ -204,8 +155,7 @@ def organize_tess_structure(output_dir):
     wav_files = list(Path(output_dir).rglob('*.wav'))
 
     # Check if already organized (files in emotion subdirectories)
-    organized_count = sum(
-        1 for f in wav_files if any(emotion in str(f.parent).lower() for emotion in emotion_keywords.values()))
+    organized_count = sum(1 for f in wav_files if any(emotion in str(f.parent).lower() for emotion in emotion_keywords.values()))
 
     if organized_count > len(wav_files) * 0.8:  # 80% already organized
         print_success("TESS already organized by emotion")
@@ -367,11 +317,10 @@ def verify_all_datasets():
             print_error(f"{name:12s}: Directory not found")
             all_ok = False
 
-    print(f"\n{'=' * 70}")
+    print(f"\n{'='*70}")
     print(f"Total WAV files: {total_files}")
     print(f"Expected total: ~11,682")
-    print(f"Completion: {(total_files / 11682) * 100:.1f}%")
-    print(f"{'=' * 70}")
+    print(f"{'='*70}")
 
     return all_ok
 
@@ -383,7 +332,7 @@ def main():
     print_header("🎯 EVA PROJECT - MANUAL DATASET EXTRACTOR")
 
     print("This script will:")
-    print("  1. Find RAVDESS, TESS and CREMA-D zip files in your project")
+    print("  1. Find TESS and CREMA-D zip files in your project")
     print("  2. Extract them to the correct locations")
     print("  3. Organize the file structure")
     print("  4. Verify all datasets\n")
@@ -392,31 +341,16 @@ def main():
     found_files = find_zip_files()
 
     # Check what we found
-    if found_files['ravdess'] is None and found_files['tess'] is None and found_files['crema'] is None:
+    if found_files['tess'] is None and found_files['crema'] is None:
         print_error("\nNo zip files found!")
         print_info("\nPlease place your zip files in one of these locations:")
         print("  - Project root directory")
         print("  - Dataset/ folder")
         print("  - Dataset/manual/ folder")
         print("\nExpected filenames:")
-        print("  - RAVDESS: *ravdess*.zip")
         print("  - TESS: *tess*.zip")
         print("  - CREMA-D: *crema*.zip or *AudioWAV*.zip")
         return
-
-    # Extract RAVDESS
-    if found_files['ravdess']:
-        ravdess_output = f"{OUTPUT_BASE}/RAVDESS"
-        success = extract_ravdess(found_files['ravdess'], ravdess_output)
-        if not success:
-            print_error("RAVDESS extraction failed!")
-    else:
-        print_info("\nRAVDESS zip not found - checking if already extracted...")
-        existing_ravdess = list(Path(f"{OUTPUT_BASE}/RAVDESS").rglob('*.wav'))
-        if len(existing_ravdess) > 1400:
-            print_success(f"RAVDESS already exists ({len(existing_ravdess)} files)")
-        else:
-            print_info("RAVDESS not found")
 
     # Extract TESS
     if found_files['tess']:
@@ -425,12 +359,7 @@ def main():
         if not success:
             print_error("TESS extraction failed!")
     else:
-        print_info("\nTESS zip not found - checking if already extracted...")
-        existing_tess = list(Path(f"{OUTPUT_BASE}/TESS").rglob('*.wav'))
-        if len(existing_tess) > 2500:
-            print_success(f"TESS already exists ({len(existing_tess)} files)")
-        else:
-            print_info("TESS not found")
+        print_info("\nTESS zip not found - skipping")
 
     # Extract CREMA-D
     if found_files['crema']:
@@ -439,12 +368,7 @@ def main():
         if not success:
             print_error("CREMA-D extraction failed!")
     else:
-        print_info("\nCREMA-D zip not found - checking if already extracted...")
-        existing_crema = list(Path(f"{OUTPUT_BASE}/CREMA-D").rglob('*.wav'))
-        if len(existing_crema) > 7000:
-            print_success(f"CREMA-D already exists ({len(existing_crema)} files)")
-        else:
-            print_info("CREMA-D not found")
+        print_info("\nCREMA-D zip not found - skipping")
 
     # Verify all datasets
     all_ok = verify_all_datasets()
@@ -466,15 +390,7 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         command = sys.argv[1].lower()
 
-        if command == '--ravdess':
-            # Extract RAVDESS only
-            found = find_zip_files()
-            if found['ravdess']:
-                extract_ravdess(found['ravdess'], f"{OUTPUT_BASE}/RAVDESS")
-            else:
-                print_error("RAVDESS zip file not found")
-
-        elif command == '--tess':
+        if command == '--tess':
             # Extract TESS only
             found = find_zip_files()
             if found['tess']:
@@ -496,11 +412,10 @@ if __name__ == "__main__":
 
         elif command in ['--help', '-h']:
             print("Usage:")
-            print("  python extract_manual_datasets.py            # Extract all")
-            print("  python extract_manual_datasets.py --ravdess  # Extract RAVDESS only")
-            print("  python extract_manual_datasets.py --tess     # Extract TESS only")
-            print("  python extract_manual_datasets.py --crema    # Extract CREMA-D only")
-            print("  python extract_manual_datasets.py --verify   # Verify datasets")
+            print("  python extract_manual_datasets.py           # Extract all")
+            print("  python extract_manual_datasets.py --tess    # Extract TESS only")
+            print("  python extract_manual_datasets.py --crema   # Extract CREMA-D only")
+            print("  python extract_manual_datasets.py --verify  # Verify datasets")
         else:
             print_error(f"Unknown command: {command}")
             print("Use --help for usage")
