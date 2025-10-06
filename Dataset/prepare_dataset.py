@@ -307,7 +307,7 @@ def prepare_eva_dataset(datasets, output_dir=OUTPUT_DIR):
     print("="*70)
     print(f"\n🚀 Next steps:")
     print(f"   1. Review the dataset: cat {output_dir}/dataset_info.json")
-    print(f"   2. Start training: python train_enhanced.py")
+    print(f"   2. Start training: python train.py")
     print(f"   3. Monitor training: tensorboard --logdir logs/")
 
     return combined_df, train_df, val_df, test_df
