@@ -1,5 +1,4 @@
 import torch
-import torch.nn as nn
 from torch.utils.data import Dataset
 import librosa
 import numpy as np
@@ -39,9 +38,13 @@ class EmotionDataset(Dataset):
             y = np.pad(y, (0, max_len - len(y)), mode="constant")
 
         # ---- Mel Spectrogram ----
+        # FIX: Use 'y=' to explicitly name the parameter
         mel = librosa.feature.melspectrogram(
-            y, sr=self.sr, n_fft=self.n_fft,
-            hop_length=self.hop_length, n_mels=self.n_mels
+            y=y,                    # Changed from positional to keyword argument
+            sr=self.sr,
+            n_fft=self.n_fft,
+            hop_length=self.hop_length,
+            n_mels=self.n_mels
         )
         mel_db = librosa.power_to_db(mel, ref=np.max)
 
