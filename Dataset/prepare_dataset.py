@@ -240,4 +240,4 @@ if __name__ == "__main__":
         output_dir='EVA_Dataset'
     )
 
-    print("\n🎉 Ready to train! Run: python train_enhanced.py")
+    print("\n🎉 Ready to train! Run: python train.py")
