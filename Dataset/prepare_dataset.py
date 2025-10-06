@@ -1,6 +1,6 @@
 """
-Dataset preparation script - Use pre-labeled datasets
-No manual labeling required!
+EVA Dataset Setup Script
+Prepares RAVDESS, TESS, and CREMA-D for training
 """
 
 import os
@@ -9,10 +9,20 @@ import numpy as np
 from pathlib import Path
 import shutil
 from sklearn.model_selection import train_test_split
+from collections import Counter
 
 # --------------------------
-# Emotion Mapping (8 emotions for EVA)
+# Configuration
 # --------------------------
+DATASETS = {
+    'ravdess_dir': 'Dataset/prelabel_en/RAVDESS',
+    'tess_dir': 'Dataset/prelabel_en/TESS',
+    'crema_dir': 'Dataset/prelabel_en/CREMA-D',
+}
+
+OUTPUT_DIR = 'EVA_Dataset'
+
+# 8 Emotions for EVA
 EMOTION_MAP = {
     'neutral': [1, 0, 0, 0, 0, 0, 0, 0],
     'calm': [0, 1, 0, 0, 0, 0, 0, 0],
@@ -26,55 +36,61 @@ EMOTION_MAP = {
 
 EMOTION_COLS = ['neutral', 'calm', 'happy', 'sad', 'angry', 'fearful', 'disgust', 'surprised']
 
-
 # --------------------------
-# RAVDESS Dataset Parser
+# RAVDESS Parser
 # --------------------------
 def parse_ravdess(ravdess_dir):
     """
-    Parse RAVDESS dataset (already labeled in filename)
+    RAVDESS filename format: 03-01-06-01-02-01-12.wav
+    Modality-Channel-Emotion-Intensity-Statement-Repetition-Actor
 
-    Filename format: 03-01-06-01-02-01-12.wav
-    Position 3 (index 2): Emotion
-        01 = neutral, 02 = calm, 03 = happy, 04 = sad,
-        05 = angry, 06 = fearful, 07 = disgust, 08 = surprised
+    Emotion codes (position 3):
+    01 = neutral, 02 = calm, 03 = happy, 04 = sad,
+    05 = angry, 06 = fearful, 07 = disgust, 08 = surprised
     """
-    data = []
+    print(f"\n📁 Parsing RAVDESS from: {ravdess_dir}")
 
+    data = []
     ravdess_emotions = {
         '01': 'neutral', '02': 'calm', '03': 'happy', '04': 'sad',
         '05': 'angry', '06': 'fearful', '07': 'disgust', '08': 'surprised'
     }
 
-    for actor_folder in Path(ravdess_dir).glob('Actor_*'):
-        for audio_file in actor_folder.glob('*.wav'):
-            # Parse filename
+    audio_files = list(Path(ravdess_dir).rglob('*.wav'))
+    print(f"   Found {len(audio_files)} .wav files")
+
+    for audio_file in audio_files:
+        try:
             parts = audio_file.stem.split('-')
-            emotion_code = parts[2]
-            emotion = ravdess_emotions.get(emotion_code)
+            if len(parts) >= 3:
+                emotion_code = parts[2]
+                emotion = ravdess_emotions.get(emotion_code)
 
-            if emotion:
-                data.append({
-                    'filename': str(audio_file),
-                    'emotion': emotion,
-                    **{col: val for col, val in zip(EMOTION_COLS, EMOTION_MAP[emotion])}
-                })
+                if emotion:
+                    data.append({
+                        'filename': str(audio_file),
+                        'emotion': emotion,
+                        'dataset': 'RAVDESS',
+                        **{col: val for col, val in zip(EMOTION_COLS, EMOTION_MAP[emotion])}
+                    })
+        except Exception as e:
+            print(f"   ⚠️  Error parsing {audio_file.name}: {e}")
 
-    return pd.DataFrame(data)
-
+    df = pd.DataFrame(data)
+    print(f"   ✅ Parsed {len(df)} samples")
+    return df
 
 # --------------------------
-# TESS Dataset Parser
+# TESS Parser
 # --------------------------
 def parse_tess(tess_dir):
     """
-    Parse TESS dataset (already labeled in filename)
-
-    Filename format: OAF_back_angry.wav
-    Last part before .wav is the emotion
+    TESS filename format: OAF_back_angry.wav or YAF_dog_sad.wav
+    Format: Speaker_Word_Emotion.wav
     """
-    data = []
+    print(f"\n📁 Parsing TESS from: {tess_dir}")
 
+    data = []
     tess_emotion_map = {
         'angry': 'angry',
         'disgust': 'disgust',
@@ -85,33 +101,40 @@ def parse_tess(tess_dir):
         'sad': 'sad'
     }
 
-    for audio_file in Path(tess_dir).rglob('*.wav'):
-        # Parse filename
-        emotion_raw = audio_file.stem.split('_')[-1].lower()
-        emotion = tess_emotion_map.get(emotion_raw)
+    audio_files = list(Path(tess_dir).rglob('*.wav'))
+    print(f"   Found {len(audio_files)} .wav files")
 
-        if emotion:
-            data.append({
-                'filename': str(audio_file),
-                'emotion': emotion,
-                **{col: val for col, val in zip(EMOTION_COLS, EMOTION_MAP[emotion])}
-            })
+    for audio_file in audio_files:
+        try:
+            # Extract emotion from filename
+            emotion_raw = audio_file.stem.split('_')[-1].lower()
+            emotion = tess_emotion_map.get(emotion_raw)
 
-    return pd.DataFrame(data)
+            if emotion:
+                data.append({
+                    'filename': str(audio_file),
+                    'emotion': emotion,
+                    'dataset': 'TESS',
+                    **{col: val for col, val in zip(EMOTION_COLS, EMOTION_MAP[emotion])}
+                })
+        except Exception as e:
+            print(f"   ⚠️  Error parsing {audio_file.name}: {e}")
 
+    df = pd.DataFrame(data)
+    print(f"   ✅ Parsed {len(df)} samples")
+    return df
 
 # --------------------------
-# CREMA-D Dataset Parser
+# CREMA-D Parser
 # --------------------------
 def parse_crema(crema_dir):
     """
-    Parse CREMA-D dataset (already labeled in filename)
-
-    Filename format: 1001_DFA_ANG_XX.wav
-    Third part is emotion code
+    CREMA-D filename format: 1001_DFA_ANG_XX.wav
+    Format: SpeakerID_Sentence_Emotion_Level.wav
     """
-    data = []
+    print(f"\n📁 Parsing CREMA-D from: {crema_dir}")
 
+    data = []
     crema_emotion_map = {
         'ANG': 'angry',
         'DIS': 'disgust',
@@ -121,123 +144,176 @@ def parse_crema(crema_dir):
         'SAD': 'sad'
     }
 
-    for audio_file in Path(crema_dir).glob('*.wav'):
-        parts = audio_file.stem.split('_')
-        if len(parts) >= 3:
-            emotion_code = parts[2]
-            emotion = crema_emotion_map.get(emotion_code)
+    audio_files = list(Path(crema_dir).rglob('*.wav'))
+    print(f"   Found {len(audio_files)} .wav files")
 
-            if emotion:
-                data.append({
-                    'filename': str(audio_file),
-                    'emotion': emotion,
-                    **{col: val for col, val in zip(EMOTION_COLS, EMOTION_MAP[emotion])}
-                })
+    for audio_file in audio_files:
+        try:
+            parts = audio_file.stem.split('_')
+            if len(parts) >= 3:
+                emotion_code = parts[2]
+                emotion = crema_emotion_map.get(emotion_code)
 
-    return pd.DataFrame(data)
+                if emotion:
+                    data.append({
+                        'filename': str(audio_file),
+                        'emotion': emotion,
+                        'dataset': 'CREMA-D',
+                        **{col: val for col, val in zip(EMOTION_COLS, EMOTION_MAP[emotion])}
+                    })
+        except Exception as e:
+            print(f"   ⚠️  Error parsing {audio_file.name}: {e}")
 
+    df = pd.DataFrame(data)
+    print(f"   ✅ Parsed {len(df)} samples")
+    return df
 
 # --------------------------
-# Combine All Datasets
+# Main Processing Function
 # --------------------------
-def prepare_combined_dataset(ravdess_dir=None, tess_dir=None, crema_dir=None,
-                             output_dir='EVA_Dataset'):
+def prepare_eva_dataset(datasets, output_dir=OUTPUT_DIR):
     """
-    Combine multiple pre-labeled datasets
-    No manual labeling required!
+    Combine all datasets and prepare for training
     """
+    print("="*70)
+    print("🎯 EVA DATASET PREPARATION")
+    print("="*70)
+
     all_data = []
 
-    # Parse each dataset
-    if ravdess_dir and os.path.exists(ravdess_dir):
-        print(f"📁 Loading RAVDESS from {ravdess_dir}...")
-        ravdess_df = parse_ravdess(ravdess_dir)
-        print(f"   Found {len(ravdess_df)} samples")
+    # Parse RAVDESS
+    if datasets.get('ravdess_dir') and os.path.exists(datasets['ravdess_dir']):
+        ravdess_df = parse_ravdess(datasets['ravdess_dir'])
         all_data.append(ravdess_df)
+    else:
+        print(f"\n⚠️  RAVDESS not found at: {datasets.get('ravdess_dir')}")
 
-    if tess_dir and os.path.exists(tess_dir):
-        print(f"📁 Loading TESS from {tess_dir}...")
-        tess_df = parse_tess(tess_dir)
-        print(f"   Found {len(tess_df)} samples")
+    # Parse TESS
+    if datasets.get('tess_dir') and os.path.exists(datasets['tess_dir']):
+        tess_df = parse_tess(datasets['tess_dir'])
         all_data.append(tess_df)
+    else:
+        print(f"\n⚠️  TESS not found at: {datasets.get('tess_dir')}")
 
-    if crema_dir and os.path.exists(crema_dir):
-        print(f"📁 Loading CREMA-D from {crema_dir}...")
-        crema_df = parse_crema(crema_dir)
-        print(f"   Found {len(crema_df)} samples")
+    # Parse CREMA-D
+    if datasets.get('crema_dir') and os.path.exists(datasets['crema_dir']):
+        crema_df = parse_crema(datasets['crema_dir'])
         all_data.append(crema_df)
+    else:
+        print(f"\n⚠️  CREMA-D not found at: {datasets.get('crema_dir')}")
 
     if not all_data:
-        raise ValueError("No datasets found! Please download at least one dataset.")
+        raise ValueError("❌ No datasets found! Please check your paths.")
 
-    # Combine
+    # Combine all datasets
     combined_df = pd.concat(all_data, ignore_index=True)
-    print(f"\n✅ Total samples: {len(combined_df)}")
 
-    # Show emotion distribution
-    print("\n📊 Emotion Distribution:")
-    emotion_counts = combined_df['emotion'].value_counts()
+    print("\n" + "="*70)
+    print(f"📊 COMBINED DATASET STATISTICS")
+    print("="*70)
+    print(f"Total samples: {len(combined_df)}")
+    print(f"\nDataset distribution:")
+    dataset_counts = combined_df['dataset'].value_counts()
+    for dataset, count in dataset_counts.items():
+        print(f"  {dataset:12s}: {count:5d} ({count/len(combined_df)*100:.1f}%)")
+
+    print(f"\nEmotion distribution:")
+    emotion_counts = combined_df['emotion'].value_counts().sort_index()
     for emotion, count in emotion_counts.items():
-        print(f"   {emotion:12s}: {count:5d} ({count / len(combined_df) * 100:.1f}%)")
+        bar = "█" * int(count / 100)
+        print(f"  {emotion:12s}: {count:5d} ({count/len(combined_df)*100:.1f}%) {bar}")
 
-    # Create output directory
+    # Check for missing emotions
+    missing_emotions = set(EMOTION_MAP.keys()) - set(emotion_counts.index)
+    if missing_emotions:
+        print(f"\n⚠️  Missing emotions: {missing_emotions}")
+        print("   Note: 'calm' is only in RAVDESS, 'surprised' may be limited")
+
+    # Create output directories
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(f"{output_dir}/processed_audio", exist_ok=True)
     os.makedirs(f"{output_dir}/labels", exist_ok=True)
 
-    # Copy audio files to processed_audio
-    print("\n📋 Copying audio files...")
+    print(f"\n📋 Copying audio files to {output_dir}/processed_audio/...")
+
+    # Copy files with unique naming
+    file_counter = {}
     for idx, row in combined_df.iterrows():
         src = row['filename']
-        dst = f"{output_dir}/processed_audio/{Path(src).name}"
+        base_name = Path(src).name
 
-        # Avoid duplicates by adding index if needed
-        if os.path.exists(dst):
-            dst = f"{output_dir}/processed_audio/{idx}_{Path(src).name}"
+        # Add counter to avoid duplicates
+        if base_name in file_counter:
+            file_counter[base_name] += 1
+            new_name = f"{Path(base_name).stem}_{file_counter[base_name]}{Path(base_name).suffix}"
+        else:
+            file_counter[base_name] = 0
+            new_name = base_name
 
+        dst = f"{output_dir}/processed_audio/{new_name}"
         shutil.copy2(src, dst)
-        combined_df.at[idx, 'filename'] = Path(dst).name
+        combined_df.at[idx, 'filename'] = new_name
+
+        if (idx + 1) % 1000 == 0:
+            print(f"   Copied {idx + 1}/{len(combined_df)} files...")
+
+    print(f"   ✅ Copied all {len(combined_df)} files")
 
     # Split train/val/test (70/15/15)
-    train_df, temp_df = train_test_split(combined_df, test_size=0.3,
-                                         stratify=combined_df['emotion'],
-                                         random_state=42)
-    val_df, test_df = train_test_split(temp_df, test_size=0.5,
-                                       stratify=temp_df['emotion'],
-                                       random_state=42)
+    print(f"\n📊 Splitting dataset (70% train, 15% val, 15% test)...")
 
-    # Save labels
+    train_df, temp_df = train_test_split(
+        combined_df,
+        test_size=0.3,
+        stratify=combined_df['emotion'],
+        random_state=42
+    )
+    val_df, test_df = train_test_split(
+        temp_df,
+        test_size=0.5,
+        stratify=temp_df['emotion'],
+        random_state=42
+    )
+
+    # Save label files
     label_cols = ['filename'] + EMOTION_COLS
     train_df[label_cols].to_csv(f"{output_dir}/labels/train_labels.csv", index=False)
     val_df[label_cols].to_csv(f"{output_dir}/labels/val_labels.csv", index=False)
     test_df[label_cols].to_csv(f"{output_dir}/labels/test_labels.csv", index=False)
 
-    print(f"\n✅ Dataset prepared successfully!")
-    print(f"   Train: {len(train_df)} samples")
-    print(f"   Val:   {len(val_df)} samples")
-    print(f"   Test:  {len(test_df)} samples")
-    print(f"\n📂 Output directory: {output_dir}/")
+    print(f"   ✅ Train set: {len(train_df)} samples → {output_dir}/labels/train_labels.csv")
+    print(f"   ✅ Val set:   {len(val_df)} samples → {output_dir}/labels/val_labels.csv")
+    print(f"   ✅ Test set:  {len(test_df)} samples → {output_dir}/labels/test_labels.csv")
+
+    # Save dataset info
+    info = {
+        'total_samples': len(combined_df),
+        'train_samples': len(train_df),
+        'val_samples': len(val_df),
+        'test_samples': len(test_df),
+        'datasets': dataset_counts.to_dict(),
+        'emotions': emotion_counts.to_dict(),
+        'emotion_labels': EMOTION_COLS
+    }
+
+    import json
+    with open(f"{output_dir}/dataset_info.json", 'w') as f:
+        json.dump(info, f, indent=2)
+
+    print(f"\n📄 Dataset info saved to: {output_dir}/dataset_info.json")
+
+    print("\n" + "="*70)
+    print("✅ DATASET PREPARATION COMPLETE!")
+    print("="*70)
+    print(f"\n🚀 Next steps:")
+    print(f"   1. Review the dataset: cat {output_dir}/dataset_info.json")
+    print(f"   2. Start training: python train_enhanced.py")
+    print(f"   3. Monitor training: tensorboard --logdir logs/")
 
     return combined_df, train_df, val_df, test_df
 
-
 # --------------------------
-# Main Execution
+# Run the script
 # --------------------------
 if __name__ == "__main__":
-    # Configure your dataset paths
-    DATASETS = {
-        'ravdess_dir': 'Dataset/prelabel_en/RAVDESS',
-        'tess_dir': 'Dataset/prelabel_en/TESS',
-        'crema_dir': 'Dataset/prelabel_en/CREMA-D',
-    }
-
-    # Prepare dataset (no manual labeling!)
-    combined_df, train_df, val_df, test_df = prepare_combined_dataset(
-        ravdess_dir=DATASETS.get('ravdess_dir'),
-        tess_dir=DATASETS.get('tess_dir'),
-        crema_dir=DATASETS.get('crema_dir'),
-        output_dir='EVA_Dataset'
-    )
-
-    print("\n🎉 Ready to train! Run: python train.py")
+    combined_df, train_df, val_df, test_df = prepare_eva_dataset(DATASETS)
