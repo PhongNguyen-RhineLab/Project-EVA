@@ -330,7 +330,8 @@ def print_model_summary(model, input_shape=(1, 1, 128, 94)):
     print(f"Non-trainable parameters: {total_params - trainable_params:,}")
 
     # Test forward pass
-    dummy_input = torch.randn(input_shape)
+    device = next(model.parameters()).device
+    dummy_input = torch.randn(input_shape).to(device)
     model.eval()
 
     with torch.no_grad():
