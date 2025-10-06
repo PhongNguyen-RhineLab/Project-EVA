@@ -1,4 +1,4 @@
-from model_fixed import BetaVAE_SER, beta_vae_loss
+from model import BetaVAE_SER, beta_vae_loss
 import torch
 import torch.optim as optim
 from torch.optim.lr_scheduler import ReduceLROnPlateau
@@ -16,16 +16,22 @@ CONFIG = {
     'batch_size': 16,
     'learning_rate': 1e-3,
     'n_epochs': 50,
-    'latent_dim': 64,  # Try 32, 64, or 128
-    'alpha': 1.0,  # Classification weight
-    'beta': 0.5,  # KL divergence weight (start small, increase gradually)
-    'gamma': 0.1,  # Reconstruction weight
-    'patience': 10,  # Early stopping patience
-    'grad_clip': 1.0,  # Gradient clipping
+    'latent_dim': 64,
+    'alpha': 1.0,
+    'beta': 0.5,
+    'gamma': 0.1,
+    'patience': 10,
+    'grad_clip': 1.0,
     'save_dir': 'checkpoints'
 }
 
 os.makedirs(CONFIG['save_dir'], exist_ok=True)
+
+# --------------------------
+# Device Setup (MOVED UP)
+# --------------------------
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
 
 # --------------------------
 # Dataset
@@ -40,19 +46,16 @@ val_dataset = EmotionDataset(
 )
 
 train_loader = DataLoader(train_dataset, batch_size=CONFIG['batch_size'],
-                          shuffle=True, num_workers=2, pin_memory=True)
+                          shuffle=True, num_workers=2, pin_memory=(device.type == 'cuda'))
 val_loader = DataLoader(val_dataset, batch_size=CONFIG['batch_size'],
-                        num_workers=2, pin_memory=True)
+                        num_workers=2, pin_memory=(device.type == 'cuda'))
 
 # --------------------------
 # Model + Optimizer + Scheduler
 # --------------------------
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"Using device: {device}")
-
 model = BetaVAE_SER(n_mels=128, n_emotions=8, latent_dim=CONFIG['latent_dim']).to(device)
 optimizer = optim.Adam(model.parameters(), lr=CONFIG['learning_rate'])
-scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, verbose=True)
+scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
 
 # --------------------------
@@ -210,7 +213,12 @@ for epoch in range(1, CONFIG['n_epochs'] + 1):
     val_metrics = eval_epoch(model, val_loader, device, CONFIG)
 
     # Learning rate scheduling
+    old_lr = optimizer.param_groups[0]['lr']
     scheduler.step(val_metrics['loss'])
+    new_lr = optimizer.param_groups[0]['lr']
+
+    if new_lr != old_lr:
+        print(f"\n📉 Learning rate reduced: {old_lr:.6f} → {new_lr:.6f}")
 
     # Print metrics
     print(f"\nTrain - Loss: {train_metrics['loss']:.4f} | "

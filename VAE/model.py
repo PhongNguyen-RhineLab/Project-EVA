@@ -69,12 +69,14 @@ class BetaVAE_SER(nn.Module):
     def encode(self, x):
         """
         Input: (B, 1, n_mels, T)
-        Output: mu, log_var (both B x latent_dim)
+        Output: mu, log_var (both B x latent_dim), and shape info
         """
+        batch_size, _, height, width = x.shape
+
         h = self.encoder_cnn(x)  # (B, 64, n_mels/4, T/4)
 
-        # Store shape for decoder
-        batch_size, channels, height, time_steps = h.shape
+        # Store original shape for decoder
+        _, channels, enc_height, enc_width = h.shape
 
         # Global avg pooling over frequency dimension
         h = h.mean(dim=2)  # (B, 64, T/4)
@@ -86,35 +88,41 @@ class BetaVAE_SER(nn.Module):
         mu = self.fc_mu(h_lstm)
         log_var = self.fc_logvar(h_lstm)
 
-        return mu, log_var, time_steps  # Return time_steps for decoder
+        return mu, log_var, (batch_size, height, width, enc_height, enc_width)
 
-    def decode(self, z, target_time_steps):
+    def decode(self, z, shape_info):
         """
         Input:
             z: (B, latent_dim)
-            target_time_steps: int - temporal dimension from encoder
-        Output: (B, 1, n_mels, T)
+            shape_info: (batch_size, orig_height, orig_width, enc_height, enc_width)
+        Output: (B, 1, n_mels, T) - matching input shape
         """
+        batch_size, orig_height, orig_width, enc_height, enc_width = shape_info
+
         h = F.relu(self.decoder_fc(z))  # (B, 128)
 
-        # Expand to sequence matching encoder's output
-        h = h.unsqueeze(1).repeat(1, target_time_steps, 1)  # (B, T/4, 128)
+        # Expand to sequence matching encoder's temporal dimension
+        h = h.unsqueeze(1).repeat(1, enc_width, 1)  # (B, enc_width, 128)
 
-        h, _ = self.decoder_lstm(h)  # (B, T/4, 64)
+        h, _ = self.decoder_lstm(h)  # (B, enc_width, 64)
 
         # Reshape for deconvolution: (B, C, H, W)
-        h = h.permute(0, 2, 1)  # (B, 64, T/4)
-        h = h.unsqueeze(2).repeat(1, 1, self.decoder_h, 1)  # (B, 64, H/4, T/4)
+        h = h.permute(0, 2, 1)  # (B, 64, enc_width)
+        h = h.unsqueeze(2).repeat(1, 1, enc_height, 1)  # (B, 64, enc_height, enc_width)
 
         # Deconvolve back to original dimensions
         x_recon = self.decoder_deconv(h)  # (B, 1, n_mels, T)
 
+        # Ensure exact match with input size (crop or pad if needed)
+        if x_recon.size(2) != orig_height or x_recon.size(3) != orig_width:
+            x_recon = F.interpolate(x_recon, size=(orig_height, orig_width), mode='bilinear', align_corners=False)
+
         return x_recon
 
     def forward(self, x):
-        mu, log_var, time_steps = self.encode(x)
+        mu, log_var, shape_info = self.encode(x)
         z = reparameterize(mu, log_var)
-        x_recon = self.decode(z, time_steps)
+        x_recon = self.decode(z, shape_info)
         y_pred = self.classifier(z)
         return x_recon, y_pred, mu, log_var
 
