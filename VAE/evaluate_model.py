@@ -1,314 +1,485 @@
 """
-Evaluate trained model on test set
-Get detailed metrics and confusion matrix
+Comprehensive Evaluation Script for EVA Project
+Evaluates trained model on test set with detailed metrics
 """
 
 import torch
 import numpy as np
+import pandas as pd
+from torch.utils.data import DataLoader
+from sklearn.metrics import (
+    classification_report, confusion_matrix,
+    f1_score, accuracy_score, hamming_loss,
+    multilabel_confusion_matrix
+)
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.metrics import classification_report, confusion_matrix, multilabel_confusion_matrix
-from sklearn.metrics import accuracy_score, f1_score, hamming_loss, jaccard_score
-from model_fixed import BetaVAE_SER
-from dataset import EmotionDataset
-from torch.utils.data import DataLoader
+import os
 from tqdm import tqdm
-import json
 
-# --------------------------
+from model import BetaVAE_SER
+from dataset_augmented import EmotionDataset
+
 # Configuration
-# --------------------------
 CHECKPOINT_PATH = 'checkpoints/best_model.pth'
-TEST_DATA_DIR = 'EVA_Dataset/processed_audio'
-TEST_LABEL_FILE = 'EVA_Dataset/labels/test_labels.csv'
+EMOTION_LABELS = ['neutral', 'calm', 'happy', 'sad', 'angry', 'fearful', 'disgust', 'surprised']
+DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+OUTPUT_DIR = 'evaluation_results'
 
-EMOTION_LABELS = ['Neutral', 'Calm', 'Happy', 'Sad', 'Angry', 'Fearful', 'Disgust', 'Surprised']
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 
-# --------------------------
-# Load Model
-# --------------------------
-def load_model(checkpoint_path, device='cuda'):
-    """Load trained model"""
-    print(f"📥 Loading model from {checkpoint_path}...")
+def load_model(checkpoint_path, device):
+    """Load trained model from checkpoint"""
+    print(f"Loading model from {checkpoint_path}...")
 
     checkpoint = torch.load(checkpoint_path, map_location=device)
+    config = checkpoint['config']
 
     model = BetaVAE_SER(
-        n_mels=128,
-        n_emotions=8,
-        latent_dim=checkpoint['config']['latent_dim']
+        n_mels=config['n_mels'],
+        n_emotions=config['n_emotions'],
+        latent_dim=config['latent_dim']
     ).to(device)
 
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
 
-    print(f"✅ Model loaded (trained for {checkpoint['epoch']} epochs)")
-    print(f"   Best val loss: {checkpoint['val_loss']:.4f}")
+    print(f"✓ Model loaded from epoch {checkpoint['epoch']}")
+    print(f"  Val F1-Micro: {checkpoint.get('f1_micro', 'N/A'):.4f}")
+    print(f"  Val Loss: {checkpoint['val_loss']:.4f}")
 
-    return model
+    return model, config
 
 
-# --------------------------
-# Evaluate on Test Set
-# --------------------------
-def evaluate(model, test_loader, device, threshold=0.5):
-    """Evaluate model and return predictions"""
-    print(f"\n🧪 Evaluating on test set...")
+def evaluate_model(model, dataloader, device):
+    """
+    Evaluate model and collect predictions
+    """
+    model.eval()
 
     all_preds = []
     all_labels = []
-    all_probs = []
+    all_latents = []
 
     with torch.no_grad():
-        for x, y in tqdm(test_loader, desc="Testing"):
-            x, y = x.to(device), y.to(device)
+        for x, y in tqdm(dataloader, desc='Evaluating'):
+            x = x.to(device)
 
-            _, y_pred, _, _ = model(x)
+            # Forward pass
+            _, y_pred, mu, _ = model(x)
 
-            all_probs.append(y_pred.cpu().numpy())
-            all_labels.append(y.cpu().numpy())
+            # Collect results
+            all_preds.append(y_pred.cpu().numpy())
+            all_labels.append(y.numpy())
+            all_latents.append(mu.cpu().numpy())
 
     # Concatenate all batches
-    all_probs = np.vstack(all_probs)
+    all_preds = np.vstack(all_preds)
     all_labels = np.vstack(all_labels)
-    all_preds = (all_probs > threshold).astype(int)
+    all_latents = np.vstack(all_latents)
 
-    return all_labels, all_preds, all_probs
+    return all_preds, all_labels, all_latents
 
 
-# --------------------------
-# Calculate Metrics
-# --------------------------
-def calculate_detailed_metrics(y_true, y_pred, y_probs):
-    """Calculate comprehensive metrics"""
-    print("\n" + "=" * 70)
-    print("📊 EVALUATION METRICS")
-    print("=" * 70)
+def calculate_detailed_metrics(y_true, y_pred, threshold=0.5):
+    """
+    Calculate comprehensive metrics for multi-label classification
+    """
+    y_pred_binary = (y_pred > threshold).astype(int)
 
-    metrics = {}
+    metrics = {
+        # Overall metrics
+        'subset_accuracy': accuracy_score(y_true, y_pred_binary),
+        'hamming_loss': hamming_loss(y_true, y_pred_binary),
+        'f1_micro': f1_score(y_true, y_pred_binary, average='micro', zero_division=0),
+        'f1_macro': f1_score(y_true, y_pred_binary, average='macro', zero_division=0),
+        'f1_weighted': f1_score(y_true, y_pred_binary, average='weighted', zero_division=0),
+        'f1_samples': f1_score(y_true, y_pred_binary, average='samples', zero_division=0),
 
-    # Overall metrics
-    metrics['subset_accuracy'] = accuracy_score(y_true, y_pred)
-    metrics['hamming_loss'] = hamming_loss(y_true, y_pred)
-    metrics['jaccard_score'] = jaccard_score(y_true, y_pred, average='samples')
+        # Per-class metrics
+        'f1_per_class': f1_score(y_true, y_pred_binary, average=None, zero_division=0),
+    }
 
-    # F1 scores
-    metrics['f1_micro'] = f1_score(y_true, y_pred, average='micro', zero_division=0)
-    metrics['f1_macro'] = f1_score(y_true, y_pred, average='macro', zero_division=0)
-    metrics['f1_weighted'] = f1_score(y_true, y_pred, average='weighted', zero_division=0)
-    metrics['f1_samples'] = f1_score(y_true, y_pred, average='samples', zero_division=0)
+    # Per-class precision, recall
+    from sklearn.metrics import precision_recall_fscore_support
+    precision, recall, f1, support = precision_recall_fscore_support(
+        y_true, y_pred_binary, average=None, zero_division=0
+    )
 
-    print(f"\n📈 Overall Performance:")
-    print(f"  Subset Accuracy:  {metrics['subset_accuracy']:.4f} (exact match)")
-    print(f"  Hamming Loss:     {metrics['hamming_loss']:.4f} (lower is better)")
-    print(f"  Jaccard Score:    {metrics['jaccard_score']:.4f} (IoU)")
-    print(f"\n  F1-Micro:         {metrics['f1_micro']:.4f}")
-    print(f"  F1-Macro:         {metrics['f1_macro']:.4f}")
-    print(f"  F1-Weighted:      {metrics['f1_weighted']:.4f}")
-    print(f"  F1-Samples:       {metrics['f1_samples']:.4f}")
-
-    # Per-emotion metrics
-    print(f"\n📊 Per-Emotion Performance:")
-    print(f"{'Emotion':<12} {'Precision':<10} {'Recall':<10} {'F1-Score':<10} {'Support':<10}")
-    print("-" * 60)
-
-    per_emotion_metrics = []
-
-    for i, emotion in enumerate(EMOTION_LABELS):
-        y_true_emotion = y_true[:, i]
-        y_pred_emotion = y_pred[:, i]
-
-        # Calculate metrics for this emotion
-        from sklearn.metrics import precision_score, recall_score
-
-        precision = precision_score(y_true_emotion, y_pred_emotion, zero_division=0)
-        recall = recall_score(y_true_emotion, y_pred_emotion, zero_division=0)
-        f1 = f1_score(y_true_emotion, y_pred_emotion, zero_division=0)
-        support = int(y_true_emotion.sum())
-
-        per_emotion_metrics.append({
-            'emotion': emotion,
-            'precision': precision,
-            'recall': recall,
-            'f1': f1,
-            'support': support
-        })
-
-        print(f"{emotion:<12} {precision:<10.4f} {recall:<10.4f} {f1:<10.4f} {support:<10d}")
-
-    metrics['per_emotion'] = per_emotion_metrics
+    metrics['precision_per_class'] = precision
+    metrics['recall_per_class'] = recall
+    metrics['support_per_class'] = support
 
     return metrics
 
 
-# --------------------------
-# Visualization
-# --------------------------
-def plot_confusion_matrices(y_true, y_pred):
+def plot_per_class_metrics(metrics, save_path):
+    """Plot per-class F1, Precision, Recall"""
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+
+    x = np.arange(len(EMOTION_LABELS))
+    width = 0.6
+
+    # F1 Score
+    axes[0].bar(x, metrics['f1_per_class'], width, color='steelblue')
+    axes[0].set_xlabel('Emotion')
+    axes[0].set_ylabel('F1 Score')
+    axes[0].set_title('F1 Score per Emotion')
+    axes[0].set_xticks(x)
+    axes[0].set_xticklabels(EMOTION_LABELS, rotation=45, ha='right')
+    axes[0].set_ylim([0, 1])
+    axes[0].grid(axis='y', alpha=0.3)
+
+    # Add value labels on bars
+    for i, v in enumerate(metrics['f1_per_class']):
+        axes[0].text(i, v + 0.02, f'{v:.3f}', ha='center', va='bottom', fontsize=9)
+
+    # Precision
+    axes[1].bar(x, metrics['precision_per_class'], width, color='green', alpha=0.7)
+    axes[1].set_xlabel('Emotion')
+    axes[1].set_ylabel('Precision')
+    axes[1].set_title('Precision per Emotion')
+    axes[1].set_xticks(x)
+    axes[1].set_xticklabels(EMOTION_LABELS, rotation=45, ha='right')
+    axes[1].set_ylim([0, 1])
+    axes[1].grid(axis='y', alpha=0.3)
+
+    for i, v in enumerate(metrics['precision_per_class']):
+        axes[1].text(i, v + 0.02, f'{v:.3f}', ha='center', va='bottom', fontsize=9)
+
+    # Recall
+    axes[2].bar(x, metrics['recall_per_class'], width, color='orange', alpha=0.7)
+    axes[2].set_xlabel('Emotion')
+    axes[2].set_ylabel('Recall')
+    axes[2].set_title('Recall per Emotion')
+    axes[2].set_xticks(x)
+    axes[2].set_xticklabels(EMOTION_LABELS, rotation=45, ha='right')
+    axes[2].set_ylim([0, 1])
+    axes[2].grid(axis='y', alpha=0.3)
+
+    for i, v in enumerate(metrics['recall_per_class']):
+        axes[2].text(i, v + 0.02, f'{v:.3f}', ha='center', va='bottom', fontsize=9)
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"✓ Saved per-class metrics plot to {save_path}")
+
+
+def plot_confusion_matrices(y_true, y_pred, threshold=0.5, save_path='confusion_matrices.png'):
     """Plot confusion matrix for each emotion"""
-    print("\n📊 Generating confusion matrices...")
+    y_pred_binary = (y_pred > threshold).astype(int)
+
+    # Get multilabel confusion matrices
+    mcm = multilabel_confusion_matrix(y_true, y_pred_binary)
 
     fig, axes = plt.subplots(2, 4, figsize=(20, 10))
     axes = axes.flatten()
 
     for i, emotion in enumerate(EMOTION_LABELS):
-        y_true_emotion = y_true[:, i]
-        y_pred_emotion = y_pred[:, i]
+        cm = mcm[i]
 
-        cm = confusion_matrix(y_true_emotion, y_pred_emotion)
+        # Plot heatmap
+        sns.heatmap(
+            cm, annot=True, fmt='d', cmap='Blues',
+            ax=axes[i],
+            xticklabels=['Negative', 'Positive'],
+            yticklabels=['Negative', 'Positive'],
+            cbar=False
+        )
 
-        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', ax=axes[i],
-                    xticklabels=['No', 'Yes'], yticklabels=['No', 'Yes'])
-        axes[i].set_title(f'{emotion}')
-        axes[i].set_ylabel('True')
+        # Calculate accuracy for this emotion
+        tn, fp, fn, tp = cm.ravel()
+        emotion_acc = (tp + tn) / (tp + tn + fp + fn)
+
+        axes[i].set_title(f'{emotion}\nAccuracy: {emotion_acc:.3f}', fontsize=12, fontweight='bold')
         axes[i].set_xlabel('Predicted')
+        axes[i].set_ylabel('True')
 
     plt.tight_layout()
-    plt.savefig('confusion_matrices.png', dpi=300, bbox_inches='tight')
-    print("✅ Saved: confusion_matrices.png")
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.close()
+    print(f"✓ Saved confusion matrices to {save_path}")
 
 
-def plot_emotion_distribution(y_true, y_pred):
-    """Compare true vs predicted emotion distribution"""
-    print("\n📊 Generating emotion distribution plot...")
+def plot_prediction_distribution(y_pred, save_path):
+    """Plot distribution of predicted probabilities"""
+    fig, axes = plt.subplots(2, 4, figsize=(20, 10))
+    axes = axes.flatten()
 
-    true_counts = y_true.sum(axis=0)
-    pred_counts = y_pred.sum(axis=0)
-
-    x = np.arange(len(EMOTION_LABELS))
-    width = 0.35
-
-    fig, ax = plt.subplots(figsize=(12, 6))
-    ax.bar(x - width / 2, true_counts, width, label='True', alpha=0.8)
-    ax.bar(x + width / 2, pred_counts, width, label='Predicted', alpha=0.8)
-
-    ax.set_xlabel('Emotions')
-    ax.set_ylabel('Count')
-    ax.set_title('Emotion Distribution: True vs Predicted')
-    ax.set_xticks(x)
-    ax.set_xticklabels(EMOTION_LABELS, rotation=45, ha='right')
-    ax.legend()
-    ax.grid(axis='y', alpha=0.3)
+    for i, emotion in enumerate(EMOTION_LABELS):
+        axes[i].hist(y_pred[:, i], bins=50, color='steelblue', alpha=0.7, edgecolor='black')
+        axes[i].axvline(x=0.5, color='red', linestyle='--', linewidth=2, label='Threshold')
+        axes[i].set_xlabel('Predicted Probability')
+        axes[i].set_ylabel('Frequency')
+        axes[i].set_title(f'{emotion}')
+        axes[i].legend()
+        axes[i].grid(alpha=0.3)
 
     plt.tight_layout()
-    plt.savefig('emotion_distribution.png', dpi=300, bbox_inches='tight')
-    print("✅ Saved: emotion_distribution.png")
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.close()
+    print(f"✓ Saved prediction distribution to {save_path}")
 
 
-def plot_f1_scores(metrics):
-    """Plot F1 scores per emotion"""
-    print("\n📊 Generating F1 score plot...")
+def plot_latent_space(latents, labels, save_path):
+    """Visualize latent space using t-SNE"""
+    from sklearn.manifold import TSNE
 
-    emotions = [m['emotion'] for m in metrics['per_emotion']]
-    f1_scores = [m['f1'] for m in metrics['per_emotion']]
+    print("Computing t-SNE projection (this may take a minute)...")
+    tsne = TSNE(n_components=2, random_state=42, perplexity=30)
+    latents_2d = tsne.fit_transform(latents)
 
-    fig, ax = plt.subplots(figsize=(12, 6))
-    bars = ax.bar(emotions, f1_scores, color='steelblue', alpha=0.8)
+    # Create a combined label for visualization (most prominent emotion)
+    dominant_emotions = np.argmax(labels, axis=1)
 
-    # Color code by performance
-    for i, bar in enumerate(bars):
-        if f1_scores[i] >= 0.7:
-            bar.set_color('green')
-        elif f1_scores[i] >= 0.5:
-            bar.set_color('orange')
-        else:
-            bar.set_color('red')
+    fig, ax = plt.subplots(figsize=(12, 10))
 
-    ax.axhline(y=metrics['f1_macro'], color='red', linestyle='--',
-               label=f"Macro F1: {metrics['f1_macro']:.3f}")
-    ax.set_xlabel('Emotions')
-    ax.set_ylabel('F1 Score')
-    ax.set_title('F1 Scores by Emotion')
-    ax.set_ylim([0, 1])
-    ax.legend()
-    ax.grid(axis='y', alpha=0.3)
+    # Plot each emotion class
+    for i, emotion in enumerate(EMOTION_LABELS):
+        mask = dominant_emotions == i
+        ax.scatter(
+            latents_2d[mask, 0],
+            latents_2d[mask, 1],
+            label=emotion,
+            alpha=0.6,
+            s=30
+        )
 
-    plt.xticks(rotation=45, ha='right')
+    ax.set_xlabel('t-SNE Dimension 1')
+    ax.set_ylabel('t-SNE Dimension 2')
+    ax.set_title('Latent Space Visualization (t-SNE)')
+    ax.legend(loc='best', framealpha=0.9)
+    ax.grid(alpha=0.3)
+
     plt.tight_layout()
-    plt.savefig('f1_scores.png', dpi=300, bbox_inches='tight')
-    print("✅ Saved: f1_scores.png")
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.close()
+    print(f"✓ Saved latent space visualization to {save_path}")
 
 
-# --------------------------
-# Main Evaluation
-# --------------------------
+def generate_classification_report(y_true, y_pred, threshold=0.5, save_path='classification_report.txt'):
+    """Generate detailed classification report"""
+    y_pred_binary = (y_pred > threshold).astype(int)
+
+    report = classification_report(
+        y_true,
+        y_pred_binary,
+        target_names=EMOTION_LABELS,
+        zero_division=0
+    )
+
+    with open(save_path, 'w') as f:
+        f.write("="*70 + "\n")
+        f.write("CLASSIFICATION REPORT\n")
+        f.write("="*70 + "\n\n")
+        f.write(report)
+        f.write("\n")
+
+    print(f"✓ Saved classification report to {save_path}")
+    return report
+
+
+def save_results_summary(metrics, save_path='results_summary.txt'):
+    """Save comprehensive results summary"""
+    with open(save_path, 'w') as f:
+        f.write("="*70 + "\n")
+        f.write("EVALUATION RESULTS SUMMARY\n")
+        f.write("="*70 + "\n\n")
+
+        f.write("Overall Metrics:\n")
+        f.write("-"*70 + "\n")
+        f.write(f"  Subset Accuracy (Exact Match): {metrics['subset_accuracy']:.4f}\n")
+        f.write(f"  Hamming Loss:                   {metrics['hamming_loss']:.4f}\n")
+        f.write(f"  F1-Micro:                       {metrics['f1_micro']:.4f}\n")
+        f.write(f"  F1-Macro:                       {metrics['f1_macro']:.4f}\n")
+        f.write(f"  F1-Weighted:                    {metrics['f1_weighted']:.4f}\n")
+        f.write(f"  F1-Samples:                     {metrics['f1_samples']:.4f}\n")
+        f.write("\n")
+
+        f.write("Per-Emotion Metrics:\n")
+        f.write("-"*70 + "\n")
+        f.write(f"{'Emotion':<12} {'F1':<8} {'Precision':<12} {'Recall':<10} {'Support':<10}\n")
+        f.write("-"*70 + "\n")
+
+        for i, emotion in enumerate(EMOTION_LABELS):
+            f.write(f"{emotion:<12} "
+                   f"{metrics['f1_per_class'][i]:<8.4f} "
+                   f"{metrics['precision_per_class'][i]:<12.4f} "
+                   f"{metrics['recall_per_class'][i]:<10.4f} "
+                   f"{int(metrics['support_per_class'][i]):<10}\n")
+
+        f.write("\n")
+        f.write("="*70 + "\n")
+
+    print(f"✓ Saved results summary to {save_path}")
+
+
+def analyze_difficult_samples(y_true, y_pred, top_k=20):
+    """Identify most difficult samples (highest error)"""
+    y_pred_binary = (y_pred > 0.5).astype(int)
+
+    # Calculate per-sample error (Hamming distance)
+    errors = np.sum(np.abs(y_true - y_pred_binary), axis=1)
+
+    # Get indices of most difficult samples
+    difficult_indices = np.argsort(errors)[-top_k:][::-1]
+
+    print(f"\n{'='*70}")
+    print(f"TOP {top_k} MOST DIFFICULT SAMPLES")
+    print(f"{'='*70}")
+    print(f"{'Index':<8} {'Errors':<10} {'True Labels':<30} {'Predicted Labels'}")
+    print("-"*70)
+
+    for idx in difficult_indices:
+        true_emotions = [EMOTION_LABELS[i] for i in range(8) if y_true[idx, i] == 1]
+        pred_emotions = [EMOTION_LABELS[i] for i in range(8) if y_pred_binary[idx, i] == 1]
+
+        print(f"{idx:<8} {errors[idx]:<10} "
+              f"{', '.join(true_emotions):<30} "
+              f"{', '.join(pred_emotions)}")
+
+
 def main():
-    print("=" * 70)
-    print("🎯 EVA MODEL EVALUATION")
-    print("=" * 70)
-
-    # Setup device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Device: {device}")
+    """Main evaluation pipeline"""
+    print("="*70)
+    print("EVA PROJECT - MODEL EVALUATION")
+    print("="*70)
+    print(f"\nDevice: {DEVICE}")
 
     # Load model
-    model = load_model(CHECKPOINT_PATH, device)
+    model, config = load_model(CHECKPOINT_PATH, DEVICE)
 
     # Load test dataset
-    print(f"\n📂 Loading test dataset...")
+    print("\nLoading test dataset...")
     test_dataset = EmotionDataset(
-        audio_dir=TEST_DATA_DIR,
-        label_file=TEST_LABEL_FILE
+        audio_dir="EVA_Dataset/processed_audio",
+        label_file="EVA_Dataset/labels/test_labels.csv",
+        sr=config['sr'],
+        n_mels=config['n_mels'],
+        duration=config['duration'],
+        hop_length=config['hop_length'],
+        n_fft=config['n_fft'],
+        augment=False
     )
-    test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False)
-    print(f"   Test samples: {len(test_dataset)}")
+
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=config['batch_size'],
+        shuffle=False,
+        num_workers=2
+    )
+
+    print(f"Test samples: {len(test_dataset)}")
 
     # Evaluate
-    y_true, y_pred, y_probs = evaluate(model, test_loader, device)
+    print("\n" + "="*70)
+    print("RUNNING EVALUATION")
+    print("="*70)
+
+    y_pred, y_true, latents = evaluate_model(model, test_loader, DEVICE)
 
     # Calculate metrics
-    metrics = calculate_detailed_metrics(y_true, y_pred, y_probs)
+    print("\nCalculating metrics...")
+    metrics = calculate_detailed_metrics(y_true, y_pred)
 
-    # Generate visualizations
-    plot_confusion_matrices(y_true, y_pred)
-    plot_emotion_distribution(y_true, y_pred)
-    plot_f1_scores(metrics)
+    # Print results
+    print("\n" + "="*70)
+    print("RESULTS")
+    print("="*70)
+    print(f"\nOverall Performance:")
+    print(f"  Subset Accuracy: {metrics['subset_accuracy']:.4f}")
+    print(f"  Hamming Loss:    {metrics['hamming_loss']:.4f}")
+    print(f"  F1-Micro:        {metrics['f1_micro']:.4f}")
+    print(f"  F1-Macro:        {metrics['f1_macro']:.4f}")
+    print(f"  F1-Weighted:     {metrics['f1_weighted']:.4f}")
 
-    # Save results
-    print(f"\n💾 Saving evaluation results...")
+    print(f"\nPer-Emotion F1 Scores:")
+    for i, emotion in enumerate(EMOTION_LABELS):
+        print(f"  {emotion:<12}: {metrics['f1_per_class'][i]:.4f}")
 
-    results = {
-        'overall_metrics': {
-            'subset_accuracy': float(metrics['subset_accuracy']),
-            'hamming_loss': float(metrics['hamming_loss']),
-            'jaccard_score': float(metrics['jaccard_score']),
-            'f1_micro': float(metrics['f1_micro']),
-            'f1_macro': float(metrics['f1_macro']),
-            'f1_weighted': float(metrics['f1_weighted']),
-            'f1_samples': float(metrics['f1_samples'])
-        },
-        'per_emotion_metrics': metrics['per_emotion'],
-        'test_samples': len(test_dataset)
-    }
+    # Generate plots
+    print("\n" + "="*70)
+    print("GENERATING VISUALIZATIONS")
+    print("="*70)
 
-    with open('evaluation_results.json', 'w') as f:
-        json.dump(results, f, indent=2)
+    plot_per_class_metrics(
+        metrics,
+        os.path.join(OUTPUT_DIR, 'per_class_metrics.png')
+    )
 
-    print("✅ Saved: evaluation_results.json")
+    plot_confusion_matrices(
+        y_true, y_pred,
+        save_path=os.path.join(OUTPUT_DIR, 'confusion_matrices.png')
+    )
 
-    # Summary
-    print("\n" + "=" * 70)
-    print("✅ EVALUATION COMPLETE!")
-    print("=" * 70)
-    print(f"\n📊 Summary:")
-    print(f"   F1-Macro:  {metrics['f1_macro']:.4f}")
-    print(f"   F1-Micro:  {metrics['f1_micro']:.4f}")
-    print(f"   Accuracy:  {metrics['subset_accuracy']:.4f}")
+    plot_prediction_distribution(
+        y_pred,
+        save_path=os.path.join(OUTPUT_DIR, 'prediction_distribution.png')
+    )
 
-    print(f"\n📁 Generated files:")
-    print(f"   - confusion_matrices.png")
-    print(f"   - emotion_distribution.png")
-    print(f"   - f1_scores.png")
-    print(f"   - evaluation_results.json")
+    plot_latent_space(
+        latents, y_true,
+        save_path=os.path.join(OUTPUT_DIR, 'latent_space_tsne.png')
+    )
 
-    print(f"\n🚀 Next steps:")
-    print(f"   1. Review the visualizations")
-    print(f"   2. Test on real audio: python inference.py")
-    print(f"   3. Fine-tune on Vietnamese data (if needed)")
+    # Generate reports
+    print("\n" + "="*70)
+    print("GENERATING REPORTS")
+    print("="*70)
+
+    report = generate_classification_report(
+        y_true, y_pred,
+        save_path=os.path.join(OUTPUT_DIR, 'classification_report.txt')
+    )
+    print("\n" + report)
+
+    save_results_summary(
+        metrics,
+        save_path=os.path.join(OUTPUT_DIR, 'results_summary.txt')
+    )
+
+    # Analyze difficult samples
+    analyze_difficult_samples(y_true, y_pred, top_k=20)
+
+    # Save predictions for further analysis
+    print(f"\n{'='*70}")
+    print("SAVING PREDICTIONS")
+    print(f"{'='*70}")
+
+    predictions_df = pd.DataFrame(y_pred, columns=EMOTION_LABELS)
+    predictions_df.to_csv(
+        os.path.join(OUTPUT_DIR, 'predictions.csv'),
+        index=False
+    )
+    print(f"✓ Saved predictions to {OUTPUT_DIR}/predictions.csv")
+
+    labels_df = pd.DataFrame(y_true, columns=EMOTION_LABELS)
+    labels_df.to_csv(
+        os.path.join(OUTPUT_DIR, 'true_labels.csv'),
+        index=False
+    )
+    print(f"✓ Saved true labels to {OUTPUT_DIR}/true_labels.csv")
+
+    latents_df = pd.DataFrame(latents, columns=[f'latent_{i}' for i in range(latents.shape[1])])
+    latents_df.to_csv(
+        os.path.join(OUTPUT_DIR, 'latent_representations.csv'),
+        index=False
+    )
+    print(f"✓ Saved latent representations to {OUTPUT_DIR}/latent_representations.csv")
+
+    print("\n" + "="*70)
+    print("EVALUATION COMPLETE!")
+    print("="*70)
+    print(f"\nAll results saved to: {OUTPUT_DIR}/")
+    print(f"\nKey files:")
+    print(f"  • results_summary.txt - Overall metrics")
+    print(f"  • classification_report.txt - Detailed report")
+    print(f"  • per_class_metrics.png - Bar charts")
+    print(f"  • confusion_matrices.png - Per-emotion confusion matrices")
+    print(f"  • latent_space_tsne.png - Latent space visualization")
+    print(f"  • predictions.csv - All predictions")
 
 
 if __name__ == "__main__":
