@@ -3,7 +3,9 @@
 # 🎭 Project EVA
 
 **Empathic Voice Assistant** - Trợ lý ảo Thấu cảm sử dụng Mô hình Ngôn ngữ Lớn và Phân tích Giọng nói Đa nhãn
+
 ![EVA Banner](https://github.com/user-attachments/assets/4a389759-37be-4c2f-a75c-e4b4e510dcc2)
+
 [![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org/)
 [![License](https://img.shields.io/badge/License-Research-green.svg)]()
