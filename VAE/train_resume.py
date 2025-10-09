@@ -44,9 +44,9 @@ def print_info(text):
 
 
 def print_header(text):
-    print(f"\n{Colors.BOLD}{Colors.BLUE}{'=' * 70}{Colors.RESET}")
+    print(f"\n{Colors.BOLD}{Colors.BLUE}{'='*70}{Colors.RESET}")
     print(f"{Colors.BOLD}{Colors.BLUE}{text}{Colors.RESET}")
-    print(f"{Colors.BOLD}{Colors.BLUE}{'=' * 70}{Colors.RESET}\n")
+    print(f"{Colors.BOLD}{Colors.BLUE}{'='*70}{Colors.RESET}\n")
 
 
 # --------------------------
@@ -349,9 +349,11 @@ def plot_training_curves(history, save_path):
 # Main Training Loop
 # --------------------------
 def resume_training(checkpoint_path, additional_epochs=None, new_patience=None,
-                    dataset_path="EVA_Dataset", kaggle_mode=False):
+                   dataset_path="EVA_Dataset", kaggle_mode=False,
+                   new_lr=None, new_batch_size=None, new_alpha=None,
+                   new_beta=None, new_gamma=None):
     """
-    Resume training from checkpoint
+    Resume training from checkpoint with optional parameter overrides
 
     Args:
         checkpoint_path: Path to checkpoint file
@@ -359,6 +361,11 @@ def resume_training(checkpoint_path, additional_epochs=None, new_patience=None,
         new_patience: New patience value (None = use config)
         dataset_path: Path to dataset directory
         kaggle_mode: If True, use Kaggle paths
+        new_lr: Override learning rate (None = use checkpoint config)
+        new_batch_size: Override batch size (None = use checkpoint config)
+        new_alpha: Override classification loss weight (None = use checkpoint config)
+        new_beta: Override KL divergence weight (None = use checkpoint config)
+        new_gamma: Override reconstruction loss weight (None = use checkpoint config)
     """
 
     print_header("EVA PROJECT - RESUME TRAINING")
@@ -374,14 +381,49 @@ def resume_training(checkpoint_path, additional_epochs=None, new_patience=None,
         load_checkpoint(checkpoint_path, device)
 
     # Override config if specified
+    config_changes = []
+
     if additional_epochs is not None:
         original_epochs = config['n_epochs']
         config['n_epochs'] = start_epoch + additional_epochs - 1
-        print_info(f"\nExtending training: {original_epochs} → {config['n_epochs']} epochs")
+        config_changes.append(f"Epochs: {original_epochs} → {config['n_epochs']}")
 
     if new_patience is not None:
         config['patience'] = new_patience
-        print_info(f"New patience: {new_patience}")
+        config_changes.append(f"Patience: {new_patience}")
+
+    if new_lr is not None:
+        old_lr = config['learning_rate']
+        config['learning_rate'] = new_lr
+        # Update optimizer learning rate
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = new_lr
+        config_changes.append(f"Learning rate: {old_lr} → {new_lr}")
+
+    if new_batch_size is not None:
+        old_bs = config['batch_size']
+        config['batch_size'] = new_batch_size
+        config_changes.append(f"Batch size: {old_bs} → {new_batch_size}")
+
+    if new_alpha is not None:
+        old_alpha = config['alpha']
+        config['alpha'] = new_alpha
+        config_changes.append(f"Alpha (classification): {old_alpha} → {new_alpha}")
+
+    if new_beta is not None:
+        old_beta = config['beta']
+        config['beta'] = new_beta
+        config_changes.append(f"Beta (KL divergence): {old_beta} → {new_beta}")
+
+    if new_gamma is not None:
+        old_gamma = config['gamma']
+        config['gamma'] = new_gamma
+        config_changes.append(f"Gamma (reconstruction): {old_gamma} → {new_gamma}")
+
+    if config_changes:
+        print_info("\nConfiguration changes:")
+        for change in config_changes:
+            print(f"  • {change}")
 
     # Adjust paths for Kaggle
     if kaggle_mode:
@@ -609,17 +651,51 @@ def resume_training(checkpoint_path, additional_epochs=None, new_patience=None,
 # CLI Interface
 # --------------------------
 def main():
-    parser = argparse.ArgumentParser(description='Resume training from checkpoint')
+    parser = argparse.ArgumentParser(
+        description='Resume training from checkpoint with parameter overrides',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Resume from best model, train 20 more epochs
+  python train_resume.py checkpoints/best_model.pth --epochs 20
+  
+  # Resume with new learning rate and patience
+  python train_resume.py checkpoints/checkpoint_epoch_50.pth --lr 0.0001 --patience 10
+  
+  # Resume with adjusted loss weights
+  python train_resume.py checkpoints/best_model.pth --alpha 1.5 --beta 0.3 --gamma 0.2
+  
+  # Resume on Kaggle with new batch size
+  python train_resume.py checkpoints/best_model.pth --kaggle --batch-size 64 --epochs 30
+        """
+    )
+
     parser.add_argument('checkpoint', type=str,
-                        help='Path to checkpoint file (e.g., checkpoints/best_model.pth)')
+                       help='Path to checkpoint file (e.g., checkpoints/best_model.pth)')
+
+    # Training parameters
     parser.add_argument('--epochs', type=int, default=None,
-                        help='Additional epochs to train (default: use config)')
+                       help='Additional epochs to train (default: use checkpoint config)')
     parser.add_argument('--patience', type=int, default=None,
-                        help='New patience value (default: use config)')
+                       help='New patience value (default: use checkpoint config)')
+    parser.add_argument('--lr', '--learning-rate', type=float, default=None, dest='lr',
+                       help='Override learning rate (default: use checkpoint config)')
+    parser.add_argument('--batch-size', type=int, default=None, dest='batch_size',
+                       help='Override batch size (default: use checkpoint config)')
+
+    # Loss weight parameters
+    parser.add_argument('--alpha', type=float, default=None,
+                       help='Classification loss weight (default: use checkpoint config)')
+    parser.add_argument('--beta', type=float, default=None,
+                       help='KL divergence loss weight (default: use checkpoint config)')
+    parser.add_argument('--gamma', type=float, default=None,
+                       help='Reconstruction loss weight (default: use checkpoint config)')
+
+    # Dataset parameters
     parser.add_argument('--dataset', type=str, default='EVA_Dataset',
-                        help='Path to dataset directory')
+                       help='Path to dataset directory')
     parser.add_argument('--kaggle', action='store_true',
-                        help='Use Kaggle paths')
+                       help='Use Kaggle paths (/kaggle/working/...)')
 
     args = parser.parse_args()
 
@@ -637,7 +713,12 @@ def main():
         additional_epochs=args.epochs,
         new_patience=args.patience,
         dataset_path=args.dataset,
-        kaggle_mode=args.kaggle
+        kaggle_mode=args.kaggle,
+        new_lr=args.lr,
+        new_batch_size=args.batch_size,
+        new_alpha=args.alpha,
+        new_beta=args.beta,
+        new_gamma=args.gamma
     )
 
 
@@ -647,19 +728,32 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         main()
     else:
-        print("Resume Training Script")
+        print("Resume Training Script for EVA Project")
         print("=" * 70)
         print("\nUsage:")
         print("  python train_resume.py <checkpoint_path> [options]")
         print("\nExamples:")
-        print("  # Resume from best model, train 20 more epochs")
+        print("  # Basic: Resume from best model, train 20 more epochs")
         print("  python train_resume.py checkpoints/best_model.pth --epochs 20")
-        print("\n  # Resume with new patience")
-        print("  python train_resume.py checkpoints/checkpoint_epoch_50.pth --patience 10")
-        print("\n  # Resume on Kaggle")
-        print("  python train_resume.py checkpoints/best_model.pth --kaggle --epochs 30")
-        print("\nOptions:")
-        print("  --epochs N     Train for N additional epochs")
-        print("  --patience N   Use new patience value")
-        print("  --dataset PATH Custom dataset path")
-        print("  --kaggle       Use Kaggle paths (/kaggle/working/...)")
+        print("\n  # Fine-tuning: Reduce learning rate and adjust patience")
+        print("  python train_resume.py checkpoints/checkpoint_epoch_50.pth --lr 0.0001 --patience 10")
+        print("\n  # Adjust loss weights to focus more on classification")
+        print("  python train_resume.py checkpoints/best_model.pth --alpha 1.5 --beta 0.3 --gamma 0.1")
+        print("\n  # Change batch size (useful for memory constraints)")
+        print("  python train_resume.py checkpoints/best_model.pth --batch-size 16 --epochs 20")
+        print("\n  # Resume on Kaggle with multiple overrides")
+        print("  python train_resume.py checkpoints/best_model.pth --kaggle --epochs 30 --lr 0.0005")
+        print("\nTraining Parameters:")
+        print("  --epochs N         Train for N additional epochs")
+        print("  --patience N       Early stopping patience")
+        print("  --lr RATE          Learning rate (e.g., 0.001, 0.0001)")
+        print("  --batch-size N     Batch size (e.g., 16, 32, 64)")
+        print("\nLoss Weight Parameters:")
+        print("  --alpha WEIGHT     Classification loss weight (default: 1.0)")
+        print("  --beta WEIGHT      KL divergence loss weight (default: 0.5)")
+        print("  --gamma WEIGHT     Reconstruction loss weight (default: 0.1)")
+        print("\nDataset Parameters:")
+        print("  --dataset PATH     Custom dataset path")
+        print("  --kaggle           Use Kaggle paths (/kaggle/working/...)")
+        print("\nNote: Any parameter not specified will use the value from the checkpoint")
+        print("=" * 70)
