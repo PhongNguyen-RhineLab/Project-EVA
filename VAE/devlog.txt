@@ -1,19 +1,254 @@
-Version Alpha 1.0.0
-// Date: 2025-09-12
-    Kích thước latent_dim (32, 64, 128).
-    Chiều dài chuỗi đầu vào cho LSTM (ở phần decoder đang giả định = 10, thay bằng T từ spectrogram thật).
-    Các trọng số α, β, γ để cân bằng loss.
+# EVA Project Development Log
 
-Version Alpha 1.1.0
-// Date: 2025-09-12
-    Thêm train.py
-        - Hiện tại chạy trên dữ liệu giả định để test pipeline.
-        - Khi thay bằng dữ liệu thật, chỉ cần thay train_dataset, val_dataset bằng dataset Mel Spectrogram từ Librosa
+## Version Alpha 1.0.0
+**Date:** 2025-09-12
 
-Version Alpha 1.2.0
-// Date: 2025-09-12
-    Thêm dataset.py
-        - Đọc audio .wav bằng librosa.
-        - Chuẩn hóa (mono, sr=16k).
-        - Trích xuất Mel Spectrogram.
-        - Trả về tensor (1, n_mels, time) và label multi-label.
+- Initial model architecture setup
+- Kích thước latent_dim (32, 64, 128)
+- Chiều dài chuỗi đầu vào cho LSTM (ở phần decoder đang giả định = 10, thay bằng T từ spectrogram thật)
+- Các trọng số α, β, γ để cân bằng loss
+
+---
+
+## Version Alpha 1.1.0
+**Date:** 2025-09-12
+
+- Thêm `train.py`
+  - Hiện tại chạy trên dữ liệu giả định để test pipeline
+  - Khi thay bằng dữ liệu thật, chỉ cần thay train_dataset, val_dataset bằng dataset Mel Spectrogram từ Librosa
+
+---
+
+## Version Alpha 1.2.0
+**Date:** 2025-09-12
+
+- Thêm `dataset.py`
+  - Đọc audio .wav bằng librosa
+  - Chuẩn hóa (mono, sr=16k)
+  - Trích xuất Mel Spectrogram
+  - Trả về tensor (1, n_mels, time) và label multi-label
+
+---
+
+## Version Alpha 1.3.0
+**Date:** 2025-09-13
+
+### Dataset Management
+- Thêm `dataset_augmented.py`
+  - Bổ sung data augmentation techniques
+  - Time shifting, noise injection
+  - Speed/pitch variations
+  - SpecAugment (time & frequency masking)
+  - Augmentation chỉ áp dụng cho training set
+
+### Dataset Download & Organization
+- Thêm `download_datasets.py` - Robust downloader với retry logic
+- Thêm `extract_dataset.py` - Extract manual downloads
+- Thêm `kaggle_organize_datasets.py` - Kaggle-specific organizer
+- Thêm `extract_dataset_colab.py` - Google Colab support
+- Hỗ trợ 3 datasets: RAVDESS (1,440 files), TESS (2,800 files), CREMA-D (7,442 files)
+
+### Dataset Preparation
+- Thêm `prepare_dataset.py`
+  - Parse và combine 3 datasets
+  - 8 emotion labels: neutral, calm, happy, sad, angry, fearful, disgust, surprised
+  - Auto split: 70% train, 15% val, 15% test
+  - Stratified splitting để balance emotion distribution
+  - Generate CSV labels và dataset_info.json
+
+---
+
+## Version Alpha 2.0.0
+**Date:** 2025-10-06
+
+### Major Model Architecture Improvements
+- **Fixed `model.py`** - Beta-VAE-SER architecture overhaul
+  - ✅ Sửa decoder architecture (loại bỏ repeat trick không hiệu quả)
+  - ✅ Learnable upsampling cho frequency dimension
+  - ✅ Proper dimension matching giữa encoder-decoder
+  - ✅ Bidirectional LSTM encoder để capture better context
+  - ✅ TransposeConv2d decoder với 3 layers upsampling
+  - ✅ Interpolation để ensure exact output size match
+
+### Loss Function Enhancements
+- Improved `beta_vae_loss()` function
+  - Beta warmup support để tránh posterior collapse
+  - Better weight balancing (α=1.0, β=0.5, γ=0.1)
+  - Individual loss component tracking
+  
+- Thêm `BetaScheduler` class
+  - Gradually increase β từ 0 → target value
+  - Configurable warmup epochs (default: 10)
+
+### Model Utilities
+- Thêm `print_model_summary()` function
+  - Detailed parameter counting
+  - Layer-wise breakdown (Encoder/Decoder/Classifier)
+  - Tensor shape verification
+
+---
+
+## Version Alpha 2.1.0
+-*Date:** 2025-10-07
+
+### Enhanced Training Pipeline
+- **Major updates to `train.py`**
+  - Integrated augmented dataset
+  - Beta warmup scheduling
+  - Gradient clipping (max_norm=1.0)
+  - Two scheduler options: ReduceLROnPlateau & CosineAnnealingWarmRestarts
+  - Early stopping với patience=15
+  - Comprehensive metrics tracking
+  
+### Training Features
+- Multi-label metrics:
+  - Subset accuracy (exact match)
+  - Hamming loss
+  - F1-micro, F1-macro, F1-weighted, F1-samples
+  - Per-class F1 scores
+  
+- Visualization:
+  - Training curves (loss & F1)
+  - Loss component breakdown (classification, reconstruction, KLD)
+  - Beta warmup schedule plot
+  - Confusion matrices per emotion
+
+### Checkpoint Management
+- Best model saving (theo F1-micro)
+- Periodic checkpoints (every 5 epochs)
+- Config & history lưu trong checkpoint
+- JSON export training history
+
+### Platform Support
+- Thêm `train_kaggle.py` - Kaggle-specific paths (/kaggle/working/)
+
+---
+
+## Version Alpha 2.2.0
+**Date:** 2025-10-07
+
+### Inference & Evaluation
+- Thêm `inference.py` - Production-ready inference class
+  - `EmotionRecognizer` class
+  - Audio preprocessing pipeline
+  - Emotion prediction với configurable threshold
+  - LLM prompt generation cho EVA assistant
+  - Formatted output cho visualization
+  
+### Comprehensive Evaluation Suite
+- Thêm `evaluate_model.py`
+  - Detailed metrics calculation
+  - Per-class precision, recall, F1
+  - Multilabel confusion matrices
+  - Classification report generation
+  
+- Advanced visualizations:
+  - Per-class metrics bar charts
+  - 8 confusion matrices (1 per emotion)
+  - Prediction probability distributions
+  - t-SNE latent space visualization
+  
+- Analysis features:
+  - Difficult sample identification
+  - Export predictions, labels, latent vectors to CSV
+  - Comprehensive results summary
+
+---
+
+## Technical Specifications
+
+### Model Architecture
+```
+Encoder:
+- Conv2D (3 layers) + BatchNorm + ReLU + Dropout
+- Bidirectional LSTM (2 layers, 256 hidden)
+- Latent: FC → μ, log_var (64 dims)
+
+Decoder:
+- FC projection from latent
+- LSTM (2 layers, 256 hidden)
+- FC projection to spatial dims
+- TransposeConv2D (3 layers) with upsampling
+- Sigmoid output
+
+Classifier:
+- 3-layer MLP with BatchNorm + Dropout
+- Sigmoid output (multi-label)
+```
+
+### Hyperparameters
+```
+latent_dim: 64
+batch_size: 32
+learning_rate: 1e-3
+n_epochs: 100
+patience: 15
+alpha: 1.0 (classification weight)
+beta: 0.5 (KLD weight, with warmup)
+gamma: 0.1 (reconstruction weight)
+```
+
+---
+
+## Known Issues & Future Work
+
+### Current Limitations
+- Missing "calm" emotion in TESS & CREMA-D (only in RAVDESS)
+- "Surprised" emotion có limited samples
+- Không capture được higher-order social emotions (guilt, shame, pride, jealousy)
+
+### Planned Features
+- [ ] TTS module integration
+- [ ] Real-time audio streaming support
+- [ ] Vietnamese dataset support
+- [ ] REST API deployment
+- [ ] React Native mobile app
+- [ ] Model quantization for mobile
+- [ ] Multi-speaker emotion detection
+- [ ] Temporal emotion tracking
+
+---
+
+## Dependencies
+```
+torch >= 2.0.0
+librosa >= 0.10.0
+scikit-learn >= 1.3.0
+pandas >= 2.0.0
+numpy >= 1.24.0
+matplotlib >= 3.7.0
+seaborn >= 0.12.0
+tqdm >= 4.65.0
+```
+
+---
+
+## File Structure
+```
+EVA/
+├── VAE/
+│   ├── model.py              # Beta-VAE architecture
+│   ├── dataset.py            # Basic dataset
+│   ├── dataset_augmented.py  # Augmented dataset
+│   ├── train.py              # Training script
+│   ├── train_kaggle.py       # Kaggle training
+│   ├── inference.py          # Inference engine
+│   ├── evaluate_model.py     # Evaluation suite
+│   └── devlog.txt           # This file
+├── Dataset/
+│   ├── download_datasets.py
+│   ├── extract_dataset.py
+│   ├── kaggle_organize_datasets.py
+│   ├── extract_dataset_colab.py
+│   └── prepare_dataset.py
+├── README.md
+└── requirements.txt
+```
+
+---
+
+## Notes
+- Model đã test và hoạt động stable trên dummy data
+- Ready for full training trên combined dataset (~11,682 samples)
+- Evaluation pipeline comprehensive và production-ready
+- Inference API sẵn sàng integrate với LLM (Gemma)
