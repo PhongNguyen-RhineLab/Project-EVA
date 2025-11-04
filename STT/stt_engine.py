@@ -22,10 +22,10 @@ class WhisperSTT:
     """
 
     def __init__(
-            self,
-            model_size: str = "base",
-            device: str = "auto",
-            language: str = "vi"  # Vietnamese by default
+        self,
+        model_size: str = "base",
+        device: str = "auto",
+        language: str = "vi"  # Vietnamese by default
     ):
         """
         Initialize Whisper STT
@@ -58,10 +58,10 @@ class WhisperSTT:
             )
 
     def transcribe(
-            self,
-            audio_path: str,
-            language: Optional[str] = None,
-            task: str = "transcribe"
+        self,
+        audio_path: str,
+        language: Optional[str] = None,
+        task: str = "transcribe"
     ) -> Dict:
         """
         Transcribe audio file to text
@@ -84,6 +84,8 @@ class WhisperSTT:
         print(f"🎧 Transcribing: {Path(audio_path).name}")
 
         # Transcribe with Whisper
+        # Note: verbose=False suppresses most output, but progress bar may still appear
+        # This is normal Whisper behavior for processing audio chunks
         result = self.model.transcribe(
             audio_path,
             language=language,
@@ -113,10 +115,10 @@ class WhisperSTT:
         return output
 
     def transcribe_array(
-            self,
-            audio_array: np.ndarray,
-            sr: int = 16000,
-            language: Optional[str] = None
+        self,
+        audio_array: np.ndarray,
+        sr: int = 16000,
+        language: Optional[str] = None
     ) -> Dict:
         """
         Transcribe audio from numpy array
@@ -131,6 +133,10 @@ class WhisperSTT:
         """
         if language is None:
             language = self.language
+
+        # Ensure audio is float32 (Whisper requirement)
+        if audio_array.dtype != np.float32:
+            audio_array = audio_array.astype(np.float32)
 
         # Whisper expects 16kHz audio
         if sr != 16000:
@@ -171,9 +177,9 @@ class VoskSTT:
     """
 
     def __init__(
-            self,
-            model_path: str,
-            sample_rate: int = 16000
+        self,
+        model_path: str,
+        sample_rate: int = 16000
     ):
         """
         Initialize Vosk STT
@@ -207,8 +213,8 @@ class VoskSTT:
             )
 
     def transcribe(
-            self,
-            audio_path: str
+        self,
+        audio_path: str
     ) -> Dict:
         """
         Transcribe audio file using Vosk
@@ -269,9 +275,9 @@ class VoskSTT:
         }
 
     def transcribe_array(
-            self,
-            audio_array: np.ndarray,
-            sr: int = 16000
+        self,
+        audio_array: np.ndarray,
+        sr: int = 16000
     ) -> Dict:
         """
         Transcribe from numpy array
@@ -332,12 +338,12 @@ class STTEngine:
     """
 
     def __init__(
-            self,
-            backend: str = "whisper",
-            whisper_model: str = "base",
-            vosk_model_path: Optional[str] = None,
-            device: str = "auto",
-            language: str = "vi"
+        self,
+        backend: str = "whisper",
+        whisper_model: str = "base",
+        vosk_model_path: Optional[str] = None,
+        device: str = "auto",
+        language: str = "vi"
     ):
         """
         Initialize STT Engine

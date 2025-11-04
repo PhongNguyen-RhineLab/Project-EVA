@@ -31,16 +31,16 @@ class EVAProcessor:
     """
 
     def __init__(
-            self,
-            # STT config
-            stt_backend: str = "whisper",
-            stt_model: str = "base",
-            stt_language: str = "vi",
-            # SER config
-            ser_checkpoint: str = "checkpoints/best_model.pth",
-            ser_device: str = "auto",
-            # Optional Vosk path
-            vosk_model_path: Optional[str] = None
+        self,
+        # STT config
+        stt_backend: str = "whisper",
+        stt_model: str = "base",
+        stt_language: str = "vi",
+        # SER config
+        ser_checkpoint: str = "checkpoints/best_model.pth",
+        ser_device: str = "auto",
+        # Optional Vosk path
+        vosk_model_path: Optional[str] = None
     ):
         """
         Initialize EVA Processor
@@ -78,9 +78,9 @@ class EVAProcessor:
         print("=" * 70)
 
     def process_audio_file(
-            self,
-            audio_path: str,
-            emotion_threshold: float = 0.3
+        self,
+        audio_path: str,
+        emotion_threshold: float = 0.3
     ) -> Dict:
         """
         Process audio file through full pipeline
@@ -152,10 +152,10 @@ class EVAProcessor:
         return results
 
     def process_audio_array(
-            self,
-            audio_array: np.ndarray,
-            sr: int = 16000,
-            emotion_threshold: float = 0.3
+        self,
+        audio_array: np.ndarray,
+        sr: int = 16000,
+        emotion_threshold: float = 0.3
     ) -> Dict:
         """
         Process audio from numpy array
@@ -170,6 +170,10 @@ class EVAProcessor:
         """
         print(f"\n🎙️  Processing audio array (sr={sr}Hz)")
         print("-" * 70)
+
+        # Ensure float32 for compatibility
+        if audio_array.dtype != np.float32:
+            audio_array = audio_array.astype(np.float32)
 
         # Step 1: STT
         print("📝 Step 1: Transcribing audio...")
@@ -348,8 +352,8 @@ if __name__ == "__main__":
         # Create dummy audio
         duration = 3
         sr = 16000
-        t = np.linspace(0, duration, int(sr * duration))
-        audio = 0.3 * np.sin(2 * np.pi * 440 * t)  # A4 note
+        t = np.linspace(0, duration, int(sr * duration), dtype=np.float32)
+        audio = (0.3 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)  # A4 note
 
         try:
             results = eva.process_audio_array(audio, sr=sr)

@@ -17,9 +17,9 @@ from STT.stt_engine import STTEngine
 
 def create_dummy_audio(duration=3, sr=16000):
     """Create a dummy audio signal for testing"""
-    t = np.linspace(0, duration, int(sr * duration))
+    t = np.linspace(0, duration, int(sr * duration), dtype=np.float32)
     # Simple sine wave
-    audio = 0.5 * np.sin(2 * np.pi * 440 * t)  # A4 note
+    audio = 0.5 * np.sin(2 * np.pi * 440 * t).astype(np.float32)  # A4 note
     return audio, sr
 
 
@@ -55,7 +55,10 @@ def test_whisper():
 
     dummy_audio, sr = create_dummy_audio()
     result = stt.transcribe_array(dummy_audio, sr=sr)
-    print("✅ Successfully processed numpy array")
+    print("✅ Successfully processed numpy array (sine wave test)")
+    print("   Note: Empty text is expected - sine wave has no speech content")
+    if not result['text'].strip():
+        print("   ✅ Correctly detected no speech in pure tone")
     display_result(result)
 
     # Test 3: Different languages
@@ -106,7 +109,11 @@ def test_vosk(model_path: str):
 def display_result(result: dict):
     """Pretty print STT result"""
     print(f"\n📝 Transcription Result:")
-    print(f"   Text: {result['text']}")
+    if result['text'].strip():
+        print(f"   Text: {result['text']}")
+    else:
+        print(f"   Text: (empty)")
+        print(f"   ℹ️  Note: No speech detected in audio")
     print(f"   Language: {result['language']}")
 
     if result['confidence'] is not None:
@@ -120,7 +127,8 @@ def display_result(result: dict):
             start = seg.get('start', 0)
             end = seg.get('end', 0)
             text = seg.get('text', '').strip()
-            print(f"   [{start:6.2f}s - {end:6.2f}s]: {text}")
+            if text:
+                print(f"   [{start:6.2f}s - {end:6.2f}s]: {text}")
 
         if len(result['segments']) > 5:
             print(f"   ... and {len(result['segments']) - 5} more segments")
@@ -154,7 +162,11 @@ def benchmark_models():
             elapsed = time.time() - start_time
 
             print(f"   ✅ Completed in {elapsed:.2f}s")
-            print(f"   📝 Text: {result['text'][:50]}...")
+            if result['text'].strip():
+                print(f"   📝 Text: {result['text'][:50]}...")
+            else:
+                print(f"   📝 Text: (empty - no speech in test tone)")
+                print(f"   ℹ️  This is expected for pure sine wave test")
 
         except Exception as e:
             print(f"   ❌ Error: {e}")
