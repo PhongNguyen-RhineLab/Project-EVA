@@ -20,7 +20,6 @@ from dataclasses import dataclass
 from pathlib import Path
 import time
 
-
 # Load environment variables from .env file if exists
 def load_env():
     env_file = Path(__file__).parent.parent / ".env"
@@ -30,7 +29,6 @@ def load_env():
             if line and not line.startswith('#') and '=' in line:
                 key, value = line.split('=', 1)
                 os.environ[key.strip()] = value.strip().strip('"\'')
-
 
 load_env()
 
@@ -74,9 +72,9 @@ class GeminiLLM(BaseLLM):
     """
 
     def __init__(
-            self,
-            api_key: str = None,
-            model: str = "gemini-2.5-flash"
+        self,
+        api_key: str = None,
+        model: str = "gemini-1.5-flash"
     ):
         self.api_key = api_key or os.getenv("GEMINI_API_KEY")
         self.model = model
@@ -99,11 +97,11 @@ class GeminiLLM(BaseLLM):
         return self._client is not None and self.api_key is not None
 
     def generate(
-            self,
-            prompt: str,
-            max_tokens: int = 512,
-            temperature: float = 0.7,
-            **kwargs
+        self,
+        prompt: str,
+        max_tokens: int = 512,
+        temperature: float = 0.7,
+        **kwargs
     ) -> LLMResponse:
         if not self.is_available():
             raise RuntimeError("Gemini not available. Set GEMINI_API_KEY.")
@@ -146,9 +144,9 @@ class GroqLLM(BaseLLM):
     """
 
     def __init__(
-            self,
-            api_key: str = None,
-            model: str = "llama-3.1-8b-instant"
+        self,
+        api_key: str = None,
+        model: str = "llama-3.1-8b-instant"
     ):
         self.api_key = api_key or os.getenv("GROQ_API_KEY")
         self.model = model
@@ -170,11 +168,11 @@ class GroqLLM(BaseLLM):
         return self._client is not None and self.api_key is not None
 
     def generate(
-            self,
-            prompt: str,
-            max_tokens: int = 512,
-            temperature: float = 0.7,
-            **kwargs
+        self,
+        prompt: str,
+        max_tokens: int = 512,
+        temperature: float = 0.7,
+        **kwargs
     ) -> LLMResponse:
         if not self.is_available():
             raise RuntimeError("Groq not available. Set GROQ_API_KEY.")
@@ -216,9 +214,9 @@ class OpenRouterLLM(BaseLLM):
     """
 
     def __init__(
-            self,
-            api_key: str = None,
-            model: str = "meta-llama/llama-3.2-3b-instruct:free"
+        self,
+        api_key: str = None,
+        model: str = "meta-llama/llama-3.2-3b-instruct:free"
     ):
         self.api_key = api_key or os.getenv("OPENROUTER_API_KEY")
         self.model = model
@@ -231,11 +229,11 @@ class OpenRouterLLM(BaseLLM):
         return self.api_key is not None
 
     def generate(
-            self,
-            prompt: str,
-            max_tokens: int = 512,
-            temperature: float = 0.7,
-            **kwargs
+        self,
+        prompt: str,
+        max_tokens: int = 512,
+        temperature: float = 0.7,
+        **kwargs
     ) -> LLMResponse:
         if not self.is_available():
             raise RuntimeError("OpenRouter not available. Set OPENROUTER_API_KEY.")
@@ -294,9 +292,9 @@ class OllamaLLM(BaseLLM):
     """
 
     def __init__(
-            self,
-            model: str = "llama3.2:3b",
-            host: str = "http://localhost:11434"
+        self,
+        model: str = "llama3.2:3b",
+        host: str = "http://localhost:11434"
     ):
         self.model = model
         self.host = host
@@ -319,11 +317,11 @@ class OllamaLLM(BaseLLM):
         return self._available
 
     def generate(
-            self,
-            prompt: str,
-            max_tokens: int = 512,
-            temperature: float = 0.7,
-            **kwargs
+        self,
+        prompt: str,
+        max_tokens: int = 512,
+        temperature: float = 0.7,
+        **kwargs
     ) -> LLMResponse:
         if not self.is_available():
             raise RuntimeError("Ollama not available. Start Ollama first.")
@@ -390,10 +388,10 @@ class TransformersLLM(BaseLLM):
     """
 
     def __init__(
-            self,
-            model_name: str = "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
-            device: str = "auto",
-            load_in_4bit: bool = True
+        self,
+        model_name: str = "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+        device: str = "auto",
+        load_in_4bit: bool = True
     ):
         self.model_name = model_name
         self.device = device
@@ -453,11 +451,11 @@ class TransformersLLM(BaseLLM):
         return self._model is not None and self._tokenizer is not None
 
     def generate(
-            self,
-            prompt: str,
-            max_tokens: int = 512,
-            temperature: float = 0.7,
-            **kwargs
+        self,
+        prompt: str,
+        max_tokens: int = 512,
+        temperature: float = 0.7,
+        **kwargs
     ) -> LLMResponse:
         if not self.is_available():
             raise RuntimeError("Model not loaded. Call .load() first.")
@@ -530,11 +528,11 @@ class LLMEngine:
     }
 
     def __init__(
-            self,
-            backend: str = None,
-            model: str = None,
-            api_key: str = None,
-            **kwargs
+        self,
+        backend: str = None,
+        model: str = None,
+        api_key: str = None,
+        **kwargs
     ):
         """
         Initialize LLM Engine
@@ -633,11 +631,11 @@ class LLMEngine:
         return self._backend is not None and self._backend.is_available()
 
     def generate(
-            self,
-            prompt: str,
-            max_tokens: int = 512,
-            temperature: float = 0.7,
-            **kwargs
+        self,
+        prompt: str,
+        max_tokens: int = 512,
+        temperature: float = 0.7,
+        **kwargs
     ) -> LLMResponse:
         """
         Generate response from prompt
@@ -678,7 +676,7 @@ class LLMEngine:
 # Test Function
 # --------------------------
 def test_llm():
-    """Test LLM engine."""
+    """Test LLM engine"""
     print("\n" + "=" * 60)
     print("🧪 LLM Engine Test")
     print("=" * 60)
@@ -699,26 +697,22 @@ def test_llm():
     # Test generation
     print(f"\n🔄 Testing generation with {engine.backend_name}...")
 
-    test_prompt = (
-        "You are a helpful assistant. Respond briefly.\n\n"
-        "User: Hello! How are you today? Introduce yourself\n"
-        "Assistant:"
-    )
+    test_prompt = """You are a helpful assistant. Respond briefly.
+
+User: Hello! How are you today?
+Assistant:"""
 
     try:
         response = engine.generate(test_prompt, max_tokens=100)
 
-        print("\n✅ Response received!")
+        print(f"✅ Response received!")
         print(f"   Model: {response.model}")
         print(f"   Latency: {response.latency:.2f}s")
-        print(f"   Tokens: {response.tokens_used or 'N/A'}")
-
-        print("\n📝 Response:")
-        print(response.text)
-        print()
+        print(f"   Tokens: {response.tokens_used or "N/A"}")
+        print(f"📝 Response:{response.text}")
 
     except Exception as e:
-        print(f"\n❌ Error: {e}\n")
+        print(f"❌ Error: {e}")
 
 
 if __name__ == "__main__":
@@ -731,13 +725,13 @@ if __name__ == "__main__":
         print("=" * 50)
         print("Usage:")
         print("  python llm_engine.py --test    # Test LLM")
-        print("\nBackends available:")
+        print("Backends available:")
         print("  - gemini (Google Gemini - free)")
         print("  - groq (Groq - free, fast)")
         print("  - openrouter (Multiple models)")
         print("  - ollama (Local)")
         print("  - transformers (HuggingFace local)")
-        print("\nSetup:")
+        print("Setup:")
         print("  1. Get free API key from Groq or Gemini")
         print("  2. Create .env file with: GROQ_API_KEY=your_key")
         print("  3. Run: python llm_engine.py --test")
