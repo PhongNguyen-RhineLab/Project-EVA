@@ -143,7 +143,10 @@ def benchmark_models():
     models = ["tiny", "base", "small"]
 
     # Create test audio
-    audio, sr = create_dummy_audio(duration=5)
+    if Path("test_audio.wav").exists():
+        audio, sr = librosa.load("test_audio.wav", sr=16000)
+    else:
+        audio, sr = create_dummy_audio(duration=5)
 
     import time
 
