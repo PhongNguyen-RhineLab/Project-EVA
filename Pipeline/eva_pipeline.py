@@ -49,18 +49,29 @@ class SERResult:
 
 
 @dataclass
+class LLMResult:
+    """LLM response result"""
+    response: str
+    model: str
+    latency: float
+    tokens_used: Optional[int] = None
+
+
+@dataclass
 class PipelineResult:
     """Combined pipeline result"""
     text: str
     emotions: Dict[str, float]
     dominant_emotions: Dict[str, float]
     llm_prompt: str
+    llm_response: Optional[str]  # Generated response
     stt_confidence: Optional[float]
     total_processing_time: float
 
     # Individual results for debugging
     stt_result: STTResult
     ser_result: SERResult
+    llm_result: Optional[LLMResult] = None
 
 
 # --------------------------
@@ -460,7 +471,12 @@ class EVAPipeline:
         device: str = "auto",
         emotion_threshold: float = 0.5,
         parallel: bool = True,
-        prompts_dir: Path = None
+        prompts_dir: Path = None,
+        # LLM settings
+        llm_backend: str = None,
+        llm_model: str = None,
+        llm_api_key: str = None,
+        enable_llm: bool = True
     ):
         """
         Initialize EVA Pipeline
@@ -474,10 +490,15 @@ class EVAPipeline:
             emotion_threshold: Threshold for dominant emotions
             parallel: Run STT and SER in parallel
             prompts_dir: Directory containing prompt files
+            llm_backend: LLM backend (groq, gemini, ollama, etc.) - auto if None
+            llm_model: LLM model name
+            llm_api_key: API key for LLM (or use .env)
+            enable_llm: Whether to enable LLM response generation
         """
         self.emotion_threshold = emotion_threshold
         self.parallel = parallel
         self.language = language
+        self.enable_llm = enable_llm
 
         print("\n" + "=" * 60)
         print("🚀 Initializing EVA Pipeline")
@@ -499,9 +520,41 @@ class EVAPipeline:
             device=device
         )
 
+        # Initialize LLM
+        self.llm = None
+        if enable_llm:
+            self._init_llm(llm_backend, llm_model, llm_api_key)
+
         print("=" * 60)
         print("✅ EVA Pipeline ready!")
         print("=" * 60 + "\n")
+
+    def _init_llm(self, backend: str, model: str, api_key: str):
+        """Initialize LLM engine"""
+        try:
+            # Try different import paths
+            try:
+                from LLM.llm_engine import LLMEngine
+            except ImportError:
+                try:
+                    from llm_engine import LLMEngine
+                except ImportError:
+                    sys.path.insert(0, str(PROJECT_ROOT / "LLM"))
+                    from LLM.llm_engine import LLMEngine
+
+            self.llm = LLMEngine(
+                backend=backend,
+                model=model,
+                api_key=api_key
+            )
+
+            if not self.llm.is_available():
+                print("⚠️  LLM not available - responses will not be generated")
+                self.llm = None
+
+        except Exception as e:
+            print(f"⚠️  Failed to initialize LLM: {e}")
+            self.llm = None
 
     def _load_audio(self, audio_path: str) -> Tuple[np.ndarray, int]:
         """Load audio file"""
@@ -601,12 +654,13 @@ YOUR EMPATHIC RESPONSE:
 
         return prompt
 
-    def process(self, audio_path: str) -> PipelineResult:
+    def process(self, audio_path: str, generate_response: bool = True) -> PipelineResult:
         """
         Process audio file through the full pipeline
 
         Args:
             audio_path: Path to audio file
+            generate_response: Whether to generate LLM response
 
         Returns:
             PipelineResult with all outputs
@@ -634,6 +688,16 @@ YOUR EMPATHIC RESPONSE:
             ser_result.dominant_emotions
         )
 
+        # Generate LLM response
+        llm_response = None
+        llm_result = None
+
+        if generate_response and self.llm and self.llm.is_available():
+            print("   Generating empathic response...")
+            llm_result = self._generate_response(llm_prompt)
+            if llm_result:
+                llm_response = llm_result.response
+
         total_time = time.time() - start_time
 
         # Build result
@@ -642,10 +706,12 @@ YOUR EMPATHIC RESPONSE:
             emotions=ser_result.emotions,
             dominant_emotions=ser_result.dominant_emotions,
             llm_prompt=llm_prompt,
+            llm_response=llm_response,
             stt_confidence=stt_result.confidence,
             total_processing_time=total_time,
             stt_result=stt_result,
-            ser_result=ser_result
+            ser_result=ser_result,
+            llm_result=llm_result
         )
 
         # Print summary
@@ -653,10 +719,33 @@ YOUR EMPATHIC RESPONSE:
 
         return result
 
+    def _generate_response(self, prompt: str) -> Optional[LLMResult]:
+        """Generate LLM response from prompt"""
+        if not self.llm:
+            return None
+
+        try:
+            response = self.llm.generate(
+                prompt,
+                max_tokens=256,
+                temperature=0.7
+            )
+
+            return LLMResult(
+                response=response.text,
+                model=response.model,
+                latency=response.latency,
+                tokens_used=response.tokens_used
+            )
+        except Exception as e:
+            print(f"   ⚠️  LLM error: {e}")
+            return None
+
     def process_array(
         self,
         audio: np.ndarray,
-        sr: int = 16000
+        sr: int = 16000,
+        generate_response: bool = True
     ) -> PipelineResult:
         """
         Process audio array through the pipeline
@@ -664,6 +753,7 @@ YOUR EMPATHIC RESPONSE:
         Args:
             audio: Audio samples (mono, float)
             sr: Sample rate
+            generate_response: Whether to generate LLM response
 
         Returns:
             PipelineResult
@@ -683,6 +773,15 @@ YOUR EMPATHIC RESPONSE:
             ser_result.dominant_emotions
         )
 
+        # Generate LLM response
+        llm_response = None
+        llm_result = None
+
+        if generate_response and self.llm and self.llm.is_available():
+            llm_result = self._generate_response(llm_prompt)
+            if llm_result:
+                llm_response = llm_result.response
+
         total_time = time.time() - start_time
 
         return PipelineResult(
@@ -690,10 +789,12 @@ YOUR EMPATHIC RESPONSE:
             emotions=ser_result.emotions,
             dominant_emotions=ser_result.dominant_emotions,
             llm_prompt=llm_prompt,
+            llm_response=llm_response,
             stt_confidence=stt_result.confidence,
             total_processing_time=total_time,
             stt_result=stt_result,
-            ser_result=ser_result
+            ser_result=ser_result,
+            llm_result=llm_result
         )
 
     def _print_summary(self, result: PipelineResult):
@@ -719,10 +820,20 @@ YOUR EMPATHIC RESPONSE:
             bar = "█" * int(prob * 20)
             print(f"   {emotion:<12} [{bar:<20}] {prob * 100:5.1f}%")
 
+        # LLM Response
+        if result.llm_response:
+            print(f"\n💬 EVA's Response:")
+            # Word wrap the response
+            response_lines = result.llm_response.strip().split('\n')
+            for line in response_lines:
+                print(f"   {line}")
+
         # Timing
         print(f"\n⏱️  Timing:")
         print(f"   STT: {result.stt_result.processing_time:.2f}s")
         print(f"   SER: {result.ser_result.processing_time:.2f}s")
+        if result.llm_result:
+            print(f"   LLM: {result.llm_result.latency:.2f}s ({result.llm_result.model})")
         print(f"   Total: {result.total_processing_time:.2f}s")
 
         print("─" * 60 + "\n")
@@ -755,17 +866,24 @@ def test_pipeline():
         ser_checkpoint=str(checkpoint),
         stt_model="base",
         language="vi",
-        parallel=True
+        parallel=True,
+        enable_llm=True  # Enable LLM
     )
 
     # Process
     result = pipeline.process(str(test_audio))
 
-    # Show LLM prompt
-    print("\n" + "=" * 60)
-    print("📋 GENERATED LLM PROMPT")
-    print("=" * 60)
-    print(result.llm_prompt)
+    # Show results
+    if result.llm_response:
+        print("\n" + "=" * 60)
+        print("🤖 EVA'S EMPATHIC RESPONSE")
+        print("=" * 60)
+        print(result.llm_response)
+    else:
+        print("\n" + "=" * 60)
+        print("📋 GENERATED LLM PROMPT (no LLM available)")
+        print("=" * 60)
+        print(result.llm_prompt)
 
     print("\n✅ Pipeline test complete!")
 
@@ -776,12 +894,15 @@ def test_pipeline():
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="EVA Pipeline - STT + SER")
+    parser = argparse.ArgumentParser(description="EVA Pipeline - STT + SER + LLM")
     parser.add_argument("audio", nargs="?", default=None, help="Audio file to process")
     parser.add_argument("--checkpoint", default="checkpoints/best_model.pth", help="SER model checkpoint")
     parser.add_argument("--stt-model", default="base", help="Whisper model size")
     parser.add_argument("--language", default="vi", help="Language code")
     parser.add_argument("--sequential", action="store_true", help="Run sequentially instead of parallel")
+    parser.add_argument("--no-llm", action="store_true", help="Disable LLM response generation")
+    parser.add_argument("--llm-backend", default=None, help="LLM backend (groq, gemini, ollama)")
+    parser.add_argument("--llm-model", default=None, help="LLM model name")
     parser.add_argument("--test", action="store_true", help="Run test")
 
     args = parser.parse_args()
@@ -793,13 +914,28 @@ if __name__ == "__main__":
             ser_checkpoint=args.checkpoint,
             stt_model=args.stt_model,
             language=args.language,
-            parallel=not args.sequential
+            parallel=not args.sequential,
+            enable_llm=not args.no_llm,
+            llm_backend=args.llm_backend,
+            llm_model=args.llm_model
         )
         result = pipeline.process(args.audio)
-        print("\n📋 LLM PROMPT:")
-        print(result.llm_prompt)
+
+        if result.llm_response:
+            print("\n🤖 EVA's Response:")
+            print(result.llm_response)
     else:
-        print("Usage:")
+        print("EVA Pipeline - Empathic Voice Assistant")
+        print("=" * 50)
+        print("\nUsage:")
         print("  python eva_pipeline.py audio.wav          # Process audio file")
         print("  python eva_pipeline.py --test             # Run test")
         print("  python eva_pipeline.py --help             # Show all options")
+        print("\nLLM Options:")
+        print("  --llm-backend groq                        # Use Groq API")
+        print("  --llm-backend ollama                      # Use local Ollama")
+        print("  --no-llm                                  # Disable LLM")
+        print("\nSetup LLM:")
+        print("  1. Get free API key from https://console.groq.com/keys")
+        print("  2. Create .env file: GROQ_API_KEY=your_key")
+        print("  3. Run: python eva_pipeline.py --test")
