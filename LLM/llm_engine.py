@@ -14,11 +14,37 @@ Supports:
 
 import os
 import json
+import sys
 from abc import ABC, abstractmethod
 from typing import Optional, Dict, Generator
 from dataclasses import dataclass
 from pathlib import Path
 import time
+
+# Add project root to path for console import
+PROJECT_ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
+try:
+    from console import console, Colors
+except ImportError:
+    # Fallback minimal console
+    class Colors:
+        GREEN = '\033[92m'
+        YELLOW = '\033[93m'
+        RED = '\033[91m'
+        RESET = '\033[0m'
+
+    class Console:
+        def info(self, msg, indent=0): print(f"{'  '*indent}[*] {msg}")
+        def success(self, msg, indent=0): print(f"{'  '*indent}[+] {msg}")
+        def warning(self, msg, indent=0): print(f"{'  '*indent}[!] {msg}")
+        def error(self, msg, indent=0): print(f"{'  '*indent}[-] {msg}")
+        def header(self, title, width=50): print(f"\n{'='*width}\n{title}\n{'='*width}")
+        def item(self, label, value, indent=1): print(f"{'  '*indent}{label}: {value}")
+        def divider(self, width=50): print("-" * width)
+    console = Console()
+
 
 # Load environment variables from .env file if exists
 def load_env():
@@ -88,9 +114,9 @@ class GeminiLLM(BaseLLM):
             import google.generativeai as genai
             genai.configure(api_key=self.api_key)
             self._client = genai.GenerativeModel(self.model)
-            print(f"✅ Gemini initialized ({self.model})")
+            console.success(f"Gemini initialized ({self.model})")
         except ImportError:
-            print("⚠️  Install google-generativeai: pip install google-generativeai")
+            console.warning("Install google-generativeai: pip install google-generativeai")
             self._client = None
 
     def is_available(self) -> bool:
@@ -159,9 +185,9 @@ class GroqLLM(BaseLLM):
         try:
             from groq import Groq
             self._client = Groq(api_key=self.api_key)
-            print(f"✅ Groq initialized ({self.model})")
+            console.success(f"Groq initialized ({self.model})")
         except ImportError:
-            print("⚠️  Install groq: pip install groq")
+            console.warning("Install groq: pip install groq")
             self._client = None
 
     def is_available(self) -> bool:
@@ -223,7 +249,7 @@ class OpenRouterLLM(BaseLLM):
         self.base_url = "https://openrouter.ai/api/v1"
 
         if self.api_key:
-            print(f"✅ OpenRouter initialized ({self.model})")
+            console.success(f"OpenRouter initialized ({self.model})")
 
     def is_available(self) -> bool:
         return self.api_key is not None
@@ -282,13 +308,12 @@ class OllamaLLM(BaseLLM):
     Setup:
     1. Install: https://ollama.ai/download
     2. Pull model: ollama pull llama3.2:3b
+    3. Start server: ollama serve
 
-    Recommended models for EVA:
-    - llama3.2:3b (3GB, fast)
-    - llama3.2:1b (1.3GB, very fast)
-    - gemma2:2b (1.6GB, good for conversation)
-    - phi3:mini (2.3GB, good quality)
-    - qwen2.5:3b (2GB, good multilingual)
+    Good models for Vietnamese:
+    - llama3.2:3b (fast, decent)
+    - gemma2:9b (better quality)
+    - qwen2.5:7b (good multilingual)
     """
 
     def __init__(
@@ -298,22 +323,21 @@ class OllamaLLM(BaseLLM):
     ):
         self.model = model
         self.host = host
-        self._available = self._check_available()
+        self._available = None
 
-        if self._available:
-            print(f"✅ Ollama initialized ({self.model})")
-        else:
-            print(f"⚠️  Ollama not running at {self.host}")
+    def is_available(self) -> bool:
+        if self._available is not None:
+            return self._available
 
-    def _check_available(self) -> bool:
         try:
             import requests
             response = requests.get(f"{self.host}/api/tags", timeout=2)
-            return response.status_code == 200
+            self._available = response.status_code == 200
+            if self._available:
+                console.success(f"Ollama connected ({self.model})")
         except:
-            return False
+            self._available = False
 
-    def is_available(self) -> bool:
         return self._available
 
     def generate(
@@ -324,7 +348,7 @@ class OllamaLLM(BaseLLM):
         **kwargs
     ) -> LLMResponse:
         if not self.is_available():
-            raise RuntimeError("Ollama not available. Start Ollama first.")
+            raise RuntimeError("Ollama not available. Is it running?")
 
         import requests
 
@@ -335,11 +359,11 @@ class OllamaLLM(BaseLLM):
             json={
                 "model": self.model,
                 "prompt": prompt,
+                "stream": False,
                 "options": {
                     "num_predict": max_tokens,
                     "temperature": temperature
-                },
-                "stream": False
+                }
             }
         )
 
@@ -358,18 +382,6 @@ class OllamaLLM(BaseLLM):
             finish_reason="stop" if data.get("done") else None
         )
 
-    def list_models(self) -> list:
-        """List available models in Ollama"""
-        if not self.is_available():
-            return []
-
-        import requests
-        response = requests.get(f"{self.host}/api/tags")
-
-        if response.status_code == 200:
-            return [m["name"] for m in response.json().get("models", [])]
-        return []
-
 
 # --------------------------
 # Transformers (HuggingFace Local)
@@ -378,77 +390,58 @@ class TransformersLLM(BaseLLM):
     """
     HuggingFace Transformers - Local inference
 
-    Recommended small models:
-    - microsoft/phi-3-mini-4k-instruct (~2GB)
-    - google/gemma-2-2b-it (~5GB)
-    - Qwen/Qwen2.5-1.5B-Instruct (~3GB)
-    - TinyLlama/TinyLlama-1.1B-Chat-v1.0 (~2GB)
+    Requires GPU for reasonable speed.
+    Models are downloaded automatically.
 
-    Note: Requires GPU for reasonable speed, or use quantized models
+    Good small models:
+    - microsoft/phi-2 (2.7B, fast)
+    - TinyLlama/TinyLlama-1.1B-Chat-v1.0 (1.1B, very fast)
+    - Qwen/Qwen2.5-1.5B-Instruct (1.5B, multilingual)
     """
 
     def __init__(
         self,
         model_name: str = "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
-        device: str = "auto",
-        load_in_4bit: bool = True
+        device: str = "auto"
     ):
         self.model_name = model_name
         self.device = device
-        self.load_in_4bit = load_in_4bit
         self._model = None
         self._tokenizer = None
-
-        print(f"📦 Transformers LLM configured ({model_name})")
-        print(f"   Call .load() to load model into memory")
+        self._loaded = False
 
     def load(self):
-        """Load model into memory"""
+        """Load model (call explicitly to avoid slow startup)"""
+        if self._loaded:
+            return
+
         try:
             from transformers import AutoModelForCausalLM, AutoTokenizer
             import torch
 
-            print(f"⏳ Loading {self.model_name}...")
+            console.info(f"Loading {self.model_name}...")
 
-            # Determine device
-            if self.device == "auto":
-                device = "cuda" if torch.cuda.is_available() else "cpu"
-            else:
-                device = self.device
-
-            # Load tokenizer
             self._tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+            self._model = AutoModelForCausalLM.from_pretrained(
+                self.model_name,
+                torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                device_map=self.device
+            )
 
-            # Load model with optional quantization
-            if self.load_in_4bit and device == "cuda":
-                from transformers import BitsAndBytesConfig
+            self._loaded = True
+            console.success(f"Transformers model loaded")
 
-                quantization_config = BitsAndBytesConfig(
-                    load_in_4bit=True,
-                    bnb_4bit_compute_dtype=torch.float16
-                )
-                self._model = AutoModelForCausalLM.from_pretrained(
-                    self.model_name,
-                    quantization_config=quantization_config,
-                    device_map="auto"
-                )
-            else:
-                self._model = AutoModelForCausalLM.from_pretrained(
-                    self.model_name,
-                    torch_dtype=torch.float16 if device == "cuda" else torch.float32,
-                    device_map="auto" if device == "cuda" else None
-                )
-                if device == "cpu":
-                    self._model = self._model.to(device)
-
-            print(f"✅ Model loaded on {device}")
-
-        except ImportError as e:
-            print(f"⚠️  Missing library: {e}")
-            print("   Install: pip install transformers accelerate bitsandbytes")
+        except ImportError:
+            console.warning("Install transformers: pip install transformers torch")
+        except Exception as e:
+            console.error(f"Failed to load model: {e}")
 
     def is_available(self) -> bool:
-        return self._model is not None and self._tokenizer is not None
+        try:
+            import transformers
+            return True
+        except ImportError:
+            return False
 
     def generate(
         self,
@@ -457,7 +450,7 @@ class TransformersLLM(BaseLLM):
         temperature: float = 0.7,
         **kwargs
     ) -> LLMResponse:
-        if not self.is_available():
+        if not self._loaded:
             raise RuntimeError("Model not loaded. Call .load() first.")
 
         import torch
@@ -546,9 +539,7 @@ class LLMEngine:
         self.backend_name = backend
         self._backend = None
 
-        print("\n" + "=" * 50)
-        print("🤖 Initializing LLM Engine")
-        print("=" * 50)
+        console.header("Initializing LLM Engine")
 
         if backend:
             self._init_specific_backend(backend, model, api_key, **kwargs)
@@ -556,12 +547,13 @@ class LLMEngine:
             self._init_auto_backend()
 
         if self._backend and self._backend.is_available():
-            print(f"✅ LLM Engine ready ({self.backend_name})")
+            console.success(f"LLM Engine ready ({self.backend_name})")
         else:
-            print("⚠️  No LLM backend available!")
+            console.warning("No LLM backend available!")
             self._print_setup_help()
 
-        print("=" * 50 + "\n")
+        console.divider()
+        print()
 
     def _init_specific_backend(self, backend: str, model: str, api_key: str, **kwargs):
         """Initialize a specific backend"""
@@ -581,7 +573,7 @@ class LLMEngine:
 
     def _init_auto_backend(self):
         """Auto-detect and initialize best available backend"""
-        print("🔍 Auto-detecting available backends...")
+        console.info("Auto-detecting available backends...")
 
         # Try API backends first
         api_backends = ["groq", "gemini", "openrouter"]
@@ -591,27 +583,27 @@ class LLMEngine:
                 self._backend = self.BACKENDS[backend]()
                 if self._backend.is_available():
                     self.backend_name = backend
-                    print(f"   Found: {backend} ✅")
+                    console.item(backend, f"{Colors.GREEN}available{Colors.RESET}")
                     return
             except Exception:
-                print(f"   {backend}: not available")
+                console.item(backend, "not available")
 
         # Try Ollama
         try:
             self._backend = OllamaLLM()
             if self._backend.is_available():
                 self.backend_name = "ollama"
-                print(f"   Found: ollama ✅")
+                console.item("ollama", f"{Colors.GREEN}available{Colors.RESET}")
                 return
         except:
-            print(f"   ollama: not available")
+            console.item("ollama", "not available")
 
         self._backend = None
         self.backend_name = None
 
     def _print_setup_help(self):
         """Print help for setting up backends"""
-        print("\n📋 Setup instructions:")
+        print("\nSetup instructions:")
         print("\n[Option 1] Groq (Recommended - Fast & Free)")
         print("   1. Get API key: https://console.groq.com/keys")
         print("   2. Set: export GROQ_API_KEY=your_key")
@@ -677,25 +669,23 @@ class LLMEngine:
 # --------------------------
 def test_llm():
     """Test LLM engine"""
-    print("\n" + "=" * 60)
-    print("🧪 LLM Engine Test")
-    print("=" * 60)
+    console.header("LLM Engine Test")
 
     # Check available backends
-    print("\n📋 Checking backends...")
+    console.info("Checking backends...")
     engine = LLMEngine()
 
     status = engine.list_backends()
     for backend, available in status.items():
-        icon = "✅" if available else "❌"
-        print(f"   {backend}: {icon}")
+        status_str = f"{Colors.GREEN}yes{Colors.RESET}" if available else f"{Colors.RED}no{Colors.RESET}"
+        console.item(backend, status_str)
 
     if not engine.is_available():
-        print("\n❌ No backend available. Follow setup instructions above.")
+        console.error("No backend available. Follow setup instructions above.")
         return
 
     # Test generation
-    print(f"\n🔄 Testing generation with {engine.backend_name}...")
+    console.info(f"Testing generation with {engine.backend_name}...")
 
     test_prompt = """You are a helpful assistant. Respond briefly.
 
@@ -705,14 +695,14 @@ Assistant:"""
     try:
         response = engine.generate(test_prompt, max_tokens=100)
 
-        print(f"✅ Response received!")
-        print(f"   Model: {response.model}")
-        print(f"   Latency: {response.latency:.2f}s")
-        print(f"   Tokens: {response.tokens_used or "N/A"}")
-        print(f"📝 Response:{response.text}")
+        console.success("Response received!")
+        console.item("Model", response.model)
+        console.item("Latency", f"{response.latency:.2f}s")
+        console.item("Tokens", response.tokens_used or "N/A")
+        print(f"\nResponse:\n{response.text}")
 
     except Exception as e:
-        print(f"❌ Error: {e}")
+        console.error(f"Error: {e}")
 
 
 if __name__ == "__main__":
@@ -723,15 +713,15 @@ if __name__ == "__main__":
     else:
         print("LLM Engine for EVA Project")
         print("=" * 50)
-        print("Usage:")
+        print("\nUsage:")
         print("  python llm_engine.py --test    # Test LLM")
-        print("Backends available:")
+        print("\nBackends available:")
         print("  - gemini (Google Gemini - free)")
         print("  - groq (Groq - free, fast)")
         print("  - openrouter (Multiple models)")
         print("  - ollama (Local)")
         print("  - transformers (HuggingFace local)")
-        print("Setup:")
+        print("\nSetup:")
         print("  1. Get free API key from Groq or Gemini")
         print("  2. Create .env file with: GROQ_API_KEY=your_key")
         print("  3. Run: python llm_engine.py --test")

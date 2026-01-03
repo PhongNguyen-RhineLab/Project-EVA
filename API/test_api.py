@@ -10,52 +10,60 @@ import requests
 import sys
 from pathlib import Path
 
+# Add project root to path
+PROJECT_ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from console import console, Colors
+
 # API base URL
 BASE_URL = "http://localhost:8000"
 
 
 def test_health():
     """Test health endpoint"""
-    print("\n🔍 Testing /health...")
+    console.info("Testing /health...")
 
     try:
         response = requests.get(f"{BASE_URL}/health")
         data = response.json()
 
-        print(f"   Status: {data['status']}")
-        print(f"   Components:")
+        console.item("Status", data['status'])
+        print("   Components:")
         for component, available in data['components'].items():
-            icon = "✅" if available else "❌"
-            print(f"      {component}: {icon}")
+            status = f"{Colors.GREEN}yes{Colors.RESET}" if available else f"{Colors.RED}no{Colors.RESET}"
+            console.item(component, status, indent=2)
 
         return data['status'] == 'healthy'
     except requests.ConnectionError:
-        print("   ❌ Could not connect to server")
-        print("   Make sure the server is running: python API/eva_api.py")
+        console.error("Could not connect to server")
+        console.info("Make sure the server is running: python API/eva_api.py", indent=1)
         return False
 
 
 def test_config():
     """Test config endpoint"""
-    print("\n🔍 Testing /config...")
+    console.info("Testing /config...")
 
     response = requests.get(f"{BASE_URL}/config")
     data = response.json()
 
-    print(f"   STT Model: {data['stt_model']}")
-    print(f"   Language: {data['language']}")
-    print(f"   LLM Backend: {data['llm_backend'] or 'None'}")
-    print(f"   LLM Available: {'✅' if data['llm_available'] else '❌'}")
+    console.item("STT Model", data['stt_model'])
+    console.item("Language", data['language'])
+    console.item("LLM Backend", data['llm_backend'] or 'None')
+
+    llm_status = f"{Colors.GREEN}yes{Colors.RESET}" if data['llm_available'] else f"{Colors.RED}no{Colors.RESET}"
+    console.item("LLM Available", llm_status)
 
     return True
 
 
 def test_process(audio_path: str):
     """Test full processing endpoint"""
-    print(f"\n🔍 Testing /process with {audio_path}...")
+    console.info(f"Testing /process with {audio_path}...")
 
     if not Path(audio_path).exists():
-        print(f"   ❌ Audio file not found: {audio_path}")
+        console.error(f"Audio file not found: {audio_path}")
         return False
 
     with open(audio_path, 'rb') as f:
@@ -65,40 +73,44 @@ def test_process(audio_path: str):
     data = response.json()
 
     if not data.get('success'):
-        print(f"   ❌ Error: {data.get('error', 'Unknown error')}")
+        console.error(f"Error: {data.get('error', 'Unknown error')}")
         return False
 
-    print(f"\n   📝 Transcription: \"{data['transcription']}\"")
-    print(f"   🎯 Confidence: {data['stt_confidence']:.1%}" if data['stt_confidence'] else "")
+    console.success("Processing successful")
+    console.item("Transcription", data['transcription'])
+    console.item("Language", data['language'])
+    console.item("Primary Emotion", f"{data['primary_emotion']} ({data['primary_emotion_score']*100:.1f}%)")
 
-    print(f"\n   🎭 Emotions:")
-    for emotion in data['emotions'][:4]:
-        print(f"      {emotion['emotion']}: {emotion['percentage']}")
-
-    print(f"\n   🏆 Primary: {data['primary_emotion']} ({data['primary_emotion_score'] * 100:.1f}%)")
+    print()
+    console.info("All emotions:")
+    for emotion in data['emotions'][:5]:
+        console.emotion(emotion['emotion'], emotion['score'])
 
     if data.get('eva_response'):
-        print(f"\n   💬 EVA's Response:")
-        for line in data['eva_response'].split('\n'):
-            print(f"      {line}")
+        print()
+        console.info("EVA Response:")
+        # Wrap long response
+        response_text = data['eva_response']
+        for line in response_text.split('\n'):
+            print(f"   {line}")
 
-    print(f"\n   ⏱️  Timing:")
+    print()
     times = data['processing_times']
-    print(f"      STT: {times['stt']:.2f}s")
-    print(f"      SER: {times['ser']:.2f}s")
+    console.item("STT time", f"{times['stt']:.3f}s")
+    console.item("SER time", f"{times['ser']:.3f}s")
     if times.get('llm'):
-        print(f"      LLM: {times['llm']:.2f}s")
-    print(f"      Total: {times['total']:.2f}s")
+        console.item("LLM time", f"{times['llm']:.3f}s")
+    console.item("Total time", f"{times['total']:.3f}s")
 
     return True
 
 
 def test_transcribe(audio_path: str):
     """Test transcription-only endpoint"""
-    print(f"\n🔍 Testing /transcribe with {audio_path}...")
+    console.info(f"Testing /transcribe with {audio_path}...")
 
     if not Path(audio_path).exists():
-        print(f"   ❌ Audio file not found: {audio_path}")
+        console.error(f"Audio file not found: {audio_path}")
         return False
 
     with open(audio_path, 'rb') as f:
@@ -108,22 +120,23 @@ def test_transcribe(audio_path: str):
     data = response.json()
 
     if not data.get('success'):
-        print(f"   ❌ Error: {data.get('error', 'Unknown error')}")
+        console.error(f"Error: {data.get('error', 'Unknown error')}")
         return False
 
-    print(f"   📝 Text: \"{data['transcription']}\"")
-    print(f"   🌍 Language: {data['language']}")
-    print(f"   ⏱️  Time: {data['processing_time']:.2f}s")
+    console.success("Transcription successful")
+    console.item("Text", data['transcription'])
+    console.item("Language", data['language'])
+    console.item("Time", f"{data['processing_time']:.3f}s")
 
     return True
 
 
 def test_emotions(audio_path: str):
     """Test emotions-only endpoint"""
-    print(f"\n🔍 Testing /emotions with {audio_path}...")
+    console.info(f"Testing /emotions with {audio_path}...")
 
     if not Path(audio_path).exists():
-        print(f"   ❌ Audio file not found: {audio_path}")
+        console.error(f"Audio file not found: {audio_path}")
         return False
 
     with open(audio_path, 'rb') as f:
@@ -133,91 +146,110 @@ def test_emotions(audio_path: str):
     data = response.json()
 
     if not data.get('success'):
-        print(f"   ❌ Error: {data.get('error', 'Unknown error')}")
+        console.error(f"Error: {data.get('error', 'Unknown error')}")
         return False
 
-    print(f"   🎭 Emotions:")
-    for emotion in data['emotions'][:4]:
-        print(f"      {emotion['emotion']}: {emotion['percentage']}")
+    console.success("Emotion analysis successful")
+    console.item("Primary", f"{data['primary_emotion']} ({data['primary_emotion_score']*100:.1f}%)")
+    console.item("Time", f"{data['processing_time']:.3f}s")
 
-    print(f"   🏆 Primary: {data['primary_emotion']}")
-    print(f"   ⏱️  Time: {data['processing_time']:.2f}s")
+    print()
+    for emotion in data['emotions'][:5]:
+        console.emotion(emotion['emotion'], emotion['score'])
 
     return True
 
 
-def test_chat():
-    """Test text chat endpoint"""
-    print("\n🔍 Testing /chat...")
+def test_chat(text: str = "I'm feeling a bit stressed today"):
+    """Test chat endpoint"""
+    console.info(f"Testing /chat...")
+    console.item("Input", text)
 
     response = requests.post(
         f"{BASE_URL}/chat",
-        params={
-            "text": "Tôi cảm thấy hơi buồn hôm nay",
-            "emotion": "Sad",
-            "emotion_score": 0.7
-        }
+        params={"text": text, "emotion": "stressed", "emotion_score": 0.7}
     )
 
     data = response.json()
 
     if not data.get('success'):
-        print(f"   ❌ Error: {data.get('error', 'Unknown error')}")
+        console.error(f"Error: {data.get('error', 'Unknown error')}")
         return False
 
-    print(f"   💬 Response: {data['response'][:200]}...")
-    print(f"   🤖 Model: {data['model']}")
-    print(f"   ⏱️  Time: {data['processing_time']:.2f}s")
+    console.success("Chat successful")
+    console.item("Model", data.get('model', 'unknown'))
+    console.item("Time", f"{data['processing_time']:.3f}s")
+
+    print()
+    console.info("Response:")
+    for line in data['response'].split('\n'):
+        print(f"   {line}")
 
     return True
 
 
 def main():
     """Run all tests"""
-    print("=" * 60)
-    print("🧪 EVA API Test Suite")
-    print("=" * 60)
+    import argparse
 
-    # Find test audio
-    project_root = Path(__file__).parent.parent
-    test_audio = project_root / "test_audio.wav"
+    global BASE_URL
+    parser = argparse.ArgumentParser(description="Test EVA API")
+    parser.add_argument("--audio", help="Audio file for testing")
+    parser.add_argument("--url", default=BASE_URL, help="API base URL")
+    parser.add_argument("--test", choices=['health', 'config', 'process', 'transcribe', 'emotions', 'chat', 'all'],
+                        default='all', help="Which test to run")
 
-    # Run tests
-    results = []
+    args = parser.parse_args()
+    BASE_URL = args.url
+    console.header("EVA API Test Suite")
+
+    results = {}
 
     # Health check first
-    if not test_health():
-        print("\n❌ Server not available. Start it with:")
-        print("   python API/eva_api.py")
-        return
+    if args.test in ['all', 'health']:
+        print()
+        results['health'] = test_health()
+        if not results['health'] and args.test == 'all':
+            console.error("Server not available, skipping other tests")
+            return
 
-    results.append(("Health", True))
-    results.append(("Config", test_config()))
+    if args.test in ['all', 'config']:
+        print()
+        results['config'] = test_config()
 
-    if test_audio.exists():
-        results.append(("Transcribe", test_transcribe(str(test_audio))))
-        results.append(("Emotions", test_emotions(str(test_audio))))
-        results.append(("Process", test_process(str(test_audio))))
-    else:
-        print(f"\n⚠️  Test audio not found: {test_audio}")
-        print("   Skipping audio tests...")
+    # Audio-dependent tests
+    if args.audio:
+        if args.test in ['all', 'process']:
+            print()
+            results['process'] = test_process(args.audio)
 
-    results.append(("Chat", test_chat()))
+        if args.test in ['all', 'transcribe']:
+            print()
+            results['transcribe'] = test_transcribe(args.audio)
+
+        if args.test in ['all', 'emotions']:
+            print()
+            results['emotions'] = test_emotions(args.audio)
+    elif args.test in ['process', 'transcribe', 'emotions']:
+        console.warning("Audio file required for this test. Use --audio path/to/file.wav")
+
+    if args.test in ['all', 'chat']:
+        print()
+        results['chat'] = test_chat()
 
     # Summary
-    print("\n" + "=" * 60)
-    print("📊 Test Results")
-    print("=" * 60)
+    console.subheader("Test Results")
 
-    passed = 0
-    for name, success in results:
-        icon = "✅" if success else "❌"
-        print(f"   {icon} {name}")
-        if success:
-            passed += 1
+    passed = sum(1 for v in results.values() if v)
+    total = len(results)
 
-    print(f"\n   Total: {passed}/{len(results)} passed")
-    print("=" * 60)
+    for test, success in results.items():
+        status = f"{Colors.GREEN}PASS{Colors.RESET}" if success else f"{Colors.RED}FAIL{Colors.RESET}"
+        print(f"  {test:12s} [{status}]")
+
+    print()
+    color = Colors.GREEN if passed == total else Colors.YELLOW
+    print(f"  {color}Total: {passed}/{total} passed{Colors.RESET}")
 
 
 if __name__ == "__main__":

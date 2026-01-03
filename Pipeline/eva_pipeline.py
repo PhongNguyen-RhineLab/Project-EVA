@@ -1,29 +1,46 @@
 """
-EVA Pipeline - Orchestrates STT + SER for Empathic Response Generation
+EVA Pipeline - Speech-to-Text + Speech Emotion Recognition + LLM
 
-Pipeline flow:
-    Audio ─┬─→ STT ──────→ text ─────────┐
-           │                              ├─→ LLM Prompt → Response
-           └─→ SER (VAE) → emotions ─────┘
+Unified pipeline for processing voice input and generating empathic responses.
 """
 
-import torch
+import sys
+import time
 import numpy as np
 import librosa
 from pathlib import Path
-from typing import Optional, Dict, Tuple, List
+from typing import Optional, Dict, List, Tuple
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import time
-import warnings
-import sys
 
-warnings.filterwarnings('ignore')
-
-# Add project root to path for imports
+# Project root
 PROJECT_ROOT = Path(__file__).parent.parent
-PROMPTS_DIR = PROJECT_ROOT / "prompts"
 sys.path.insert(0, str(PROJECT_ROOT))
+
+try:
+    from console import console, Colors
+except ImportError:
+    # Fallback minimal console
+    class Colors:
+        GREEN = '\033[92m'
+        YELLOW = '\033[93m'
+        RED = '\033[91m'
+        CYAN = '\033[96m'
+        RESET = '\033[0m'
+
+    class Console:
+        def info(self, msg, indent=0): print(f"{'  '*indent}[*] {msg}")
+        def success(self, msg, indent=0): print(f"{'  '*indent}[+] {msg}")
+        def warning(self, msg, indent=0): print(f"{'  '*indent}[!] {msg}")
+        def error(self, msg, indent=0): print(f"{'  '*indent}[-] {msg}")
+        def header(self, title, width=60): print(f"\n{'='*width}\n{title.center(width)}\n{'='*width}")
+        def subheader(self, title, width=60): print(f"\n{'-'*width}\n{title}\n{'-'*width}")
+        def item(self, label, value, indent=1): print(f"{'  '*indent}{label}: {value}")
+        def divider(self, width=60, char="-"): print(char * width)
+        def emotion(self, name, score, width=20):
+            bar = "█" * int(width * score) + "░" * (width - int(width * score))
+            print(f"  {name:12s} [{bar}] {score*100:5.1f}%")
+    console = Console()
 
 
 # --------------------------
@@ -35,144 +52,104 @@ class STTResult:
     text: str
     language: str
     confidence: Optional[float]
-    segments: List[dict]
+    segments: List[Dict]
     processing_time: float
 
 
 @dataclass
 class SERResult:
     """Speech Emotion Recognition result"""
-    emotions: Dict[str, float]  # All emotion probabilities
-    dominant_emotions: Dict[str, float]  # Emotions above threshold
-    latent_vector: np.ndarray
+    emotions: Dict[str, float]
+    dominant_emotions: Dict[str, float]
+    latent_vector: Optional[np.ndarray]
     processing_time: float
 
 
 @dataclass
-class LLMResult:
-    """LLM response result"""
-    response: str
-    model: str
-    latency: float
-    tokens_used: Optional[int] = None
+class TTSResult:
+    """Text-to-Speech result"""
+    audio_data: bytes
+    format: str
+    sample_rate: int
+    duration: Optional[float]
+    processing_time: float
 
 
 @dataclass
 class PipelineResult:
-    """Combined pipeline result"""
+    """Complete pipeline result"""
+    # STT
     text: str
+    stt_result: STTResult
+    stt_confidence: Optional[float]
+
+    # SER
     emotions: Dict[str, float]
     dominant_emotions: Dict[str, float]
-    llm_prompt: str
-    llm_response: Optional[str]  # Generated response
-    stt_confidence: Optional[float]
-    total_processing_time: float
-
-    # Individual results for debugging
-    stt_result: STTResult
     ser_result: SERResult
-    llm_result: Optional[LLMResult] = None
+
+    # LLM
+    llm_prompt: str
+    llm_response: Optional[str]
+    llm_result: Optional[object]
+
+    # TTS
+    tts_result: Optional[TTSResult] = None
+    audio_response: Optional[bytes] = None
+
+    # Meta
+    total_processing_time: float = 0.0
 
 
 # --------------------------
 # Prompt Manager
 # --------------------------
 class PromptManager:
-    """
-    Manages prompt templates loaded from external files
-
-    Files:
-        prompts/system_context.txt - System context for LLM
-        prompts/response_guidelines.txt - Emotion-specific guidelines
-    """
+    """Manages LLM prompts for empathic responses"""
 
     def __init__(self, prompts_dir: Path = None):
-        """
-        Initialize prompt manager
+        if prompts_dir is None:
+            prompts_dir = PROJECT_ROOT / "prompts"
 
-        Args:
-            prompts_dir: Directory containing prompt files
-        """
-        self.prompts_dir = prompts_dir or PROMPTS_DIR
-        self.system_context = ""
+        self.prompts_dir = Path(prompts_dir)
         self.guidelines = {}
+        self.system_context = ""
         self.general_principles = ""
 
         self._load_prompts()
 
     def _load_prompts(self):
-        """Load prompts from files"""
+        """Load prompt templates from files"""
         # Load system context
         system_file = self.prompts_dir / "system_context.txt"
         if system_file.exists():
-            self.system_context = system_file.read_text(encoding='utf-8').strip()
-            print(f"✅ Loaded system context from {system_file.name}")
+            self.system_context = system_file.read_text().strip()
         else:
-            print(f"⚠️  System context file not found: {system_file}")
-            self.system_context = "You are EVA, an empathic voice assistant."
+            self.system_context = """You are EVA, an empathic voice assistant designed to provide emotional support.
+Your role is to:
+- Listen actively and respond with genuine empathy
+- Validate the user's feelings
+- Provide supportive, non-judgmental responses
+- Help users process their emotions constructively"""
 
-        # Load response guidelines
-        guidelines_file = self.prompts_dir / "response_guidelines.txt"
-        if guidelines_file.exists():
-            self._parse_guidelines(guidelines_file.read_text(encoding='utf-8'))
-            print(f"✅ Loaded response guidelines from {guidelines_file.name}")
+        # Load emotion-specific guidelines
+        guidelines_dir = self.prompts_dir / "guidelines"
+        if guidelines_dir.exists():
+            for file in guidelines_dir.glob("*.txt"):
+                key = file.stem.upper()
+                self.guidelines[key] = file.read_text().strip()
         else:
-            print(f"⚠️  Guidelines file not found: {guidelines_file}")
-            self._set_default_guidelines()
-
-    def _parse_guidelines(self, content: str):
-        """Parse guidelines file into sections"""
-        current_section = None
-        current_lines = []
-
-        for line in content.split('\n'):
-            line = line.strip()
-
-            # Skip empty lines and comments
-            if not line or line.startswith('#'):
-                continue
-
-            # Check for section header
-            if line.startswith('[') and line.endswith(']'):
-                # Save previous section
-                if current_section and current_lines:
-                    self.guidelines[current_section] = '\n'.join(current_lines)
-
-                # Start new section
-                current_section = line[1:-1]  # Remove brackets
-                current_lines = []
-            else:
-                current_lines.append(line)
-
-        # Save last section
-        if current_section and current_lines:
-            self.guidelines[current_section] = '\n'.join(current_lines)
-
-        # Extract general principles
-        self.general_principles = self.guidelines.get('GENERAL_PRINCIPLES', '')
-
-    def _set_default_guidelines(self):
-        """Set default guidelines if file not found"""
-        self.guidelines = {
-            'SAD_FEARFUL': "- Use a gentle, supportive tone\n- Acknowledge their feelings first",
-            'ANGRY_DISGUST': "- Stay calm and non-judgmental\n- Validate their frustration",
-            'HAPPY_SURPRISED': "- Match their positive energy\n- Share in their joy/excitement",
-            'DEFAULT': "- Be warm and conversational\n- Show genuine interest"
-        }
+            # Default guidelines
+            self.guidelines = {
+                'DEFAULT': "Respond with empathy and understanding.",
+                'SAD_FEARFUL': "Show extra compassion. Validate their feelings.",
+                'ANGRY_DISGUST': "Stay calm. Acknowledge their frustration.",
+                'HAPPY_SURPRISED': "Share in their positive emotions."
+            }
         self.general_principles = "- Respond with empathy and understanding"
 
     def get_guidelines_for_emotion(self, emotion: str, intensity: float) -> str:
-        """
-        Get appropriate guidelines based on detected emotion
-
-        Args:
-            emotion: Primary emotion detected
-            intensity: Emotion intensity (0-1)
-
-        Returns:
-            Guidelines string
-        """
-        # Map emotions to guideline categories
+        """Get appropriate guidelines based on detected emotion"""
         if emotion in ["Sad", "Fearful"] and intensity > 0.5:
             return self.guidelines.get('SAD_FEARFUL', self.guidelines.get('DEFAULT', ''))
         elif emotion in ["Angry", "Disgust"] and intensity > 0.5:
@@ -183,19 +160,17 @@ class PromptManager:
             return self.guidelines.get('DEFAULT', '')
 
     def reload(self):
-        """Reload prompts from files (useful for hot-reloading)"""
+        """Reload prompts from files"""
         self.guidelines = {}
         self._load_prompts()
-        print("🔄 Prompts reloaded")
+        console.info("Prompts reloaded")
 
 
 # --------------------------
 # SER Module Wrapper
 # --------------------------
 class SERModule:
-    """
-    Speech Emotion Recognition using trained Beta-VAE model
-    """
+    """Speech Emotion Recognition using trained Beta-VAE model"""
 
     EMOTION_LABELS = [
         "Neutral", "Calm", "Happy", "Sad",
@@ -212,38 +187,30 @@ class SERModule:
         hop_length: int = 512,
         n_fft: int = 2048
     ):
-        """
-        Initialize SER module
+        import torch
 
-        Args:
-            checkpoint_path: Path to trained model checkpoint
-            device: "cuda", "cpu", or "auto"
-            sr: Sample rate for audio processing
-            n_mels: Number of mel frequency bins
-            duration: Audio duration in seconds
-            hop_length: Hop length for spectrogram
-            n_fft: FFT window size
-        """
-        # Set device
-        if device == "auto":
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        else:
-            self.device = torch.device(device)
-
-        # Audio params
         self.sr = sr
         self.n_mels = n_mels
         self.duration = duration
         self.hop_length = hop_length
         self.n_fft = n_fft
+        self.target_frames = int(sr * duration / hop_length) + 1
 
-        print(f"🎭 Initializing SER module on {self.device}")
+        # Device
+        if device == "auto":
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        else:
+            self.device = torch.device(device)
 
         # Load model
+        console.info(f"Loading SER model from {checkpoint_path}")
         self._load_model(checkpoint_path)
+        console.success(f"SER ready on {self.device}")
 
     def _load_model(self, checkpoint_path: str):
         """Load trained Beta-VAE model"""
+        import torch
+
         # Try different import paths
         try:
             from VAE.model import BetaVAE_SER
@@ -266,81 +233,60 @@ class SERModule:
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.model.eval()
 
-        print(f"✅ SER model loaded (epoch {checkpoint['epoch']}, F1: {checkpoint.get('f1_micro', 'N/A'):.4f})")
+        console.success(f"SER model loaded (epoch {checkpoint['epoch']}, F1: {checkpoint.get('f1_micro', 0):.4f})")
 
-    def _preprocess_audio(self, audio: np.ndarray, sr: int) -> torch.Tensor:
-        """Convert audio to mel spectrogram tensor"""
+    def _extract_mel_spectrogram(self, audio: np.ndarray) -> np.ndarray:
+        """Extract mel spectrogram from audio"""
+        # Pad or trim to target duration
+        target_samples = self.sr * self.duration
+        if len(audio) > target_samples:
+            audio = audio[:target_samples]
+        else:
+            audio = np.pad(audio, (0, target_samples - len(audio)), mode='constant')
+
+        # Extract mel spectrogram
+        mel_spec = librosa.feature.melspectrogram(
+            y=audio,
+            sr=self.sr,
+            n_mels=self.n_mels,
+            n_fft=self.n_fft,
+            hop_length=self.hop_length
+        )
+
+        # Convert to dB and normalize to [0, 1]
+        mel_spec_db = librosa.power_to_db(mel_spec, ref=np.max)
+        mel_spec_norm = (mel_spec_db - mel_spec_db.min()) / (mel_spec_db.max() - mel_spec_db.min() + 1e-6)
+
+        return mel_spec_norm
+
+    def predict(self, audio: np.ndarray, sr: int = 16000, threshold: float = 0.5) -> SERResult:
+        """Predict emotions from audio"""
+        import torch
+
+        start_time = time.time()
+
         # Resample if needed
         if sr != self.sr:
             audio = librosa.resample(audio, orig_sr=sr, target_sr=self.sr)
 
-        # Pad/truncate to fixed length
-        max_len = self.duration * self.sr
-        if len(audio) > max_len:
-            audio = audio[:max_len]
-        else:
-            audio = np.pad(audio, (0, max_len - len(audio)), mode="constant")
+        # Extract features
+        mel_spec = self._extract_mel_spectrogram(audio)
 
-        # Compute mel spectrogram
-        mel = librosa.feature.melspectrogram(
-            y=audio,
-            sr=self.sr,
-            n_fft=self.n_fft,
-            hop_length=self.hop_length,
-            n_mels=self.n_mels
-        )
-        mel_db = librosa.power_to_db(mel, ref=np.max)
-
-        # Normalize to [0, 1]
-        mel_norm = (mel_db - mel_db.min()) / (mel_db.max() - mel_db.min() + 1e-6)
-
-        # Convert to tensor: (1, 1, n_mels, time)
-        mel_tensor = torch.tensor(mel_norm, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
-
-        return mel_tensor
-
-    def predict(
-        self,
-        audio: np.ndarray,
-        sr: int = 16000,
-        threshold: float = 0.5
-    ) -> SERResult:
-        """
-        Predict emotions from audio array
-
-        Args:
-            audio: Audio samples (mono, float)
-            sr: Sample rate
-            threshold: Threshold for dominant emotions
-
-        Returns:
-            SERResult with emotion predictions
-        """
-        start_time = time.time()
-
-        # Preprocess
-        mel_tensor = self._preprocess_audio(audio, sr).to(self.device)
+        # Prepare input tensor
+        x = torch.tensor(mel_spec, dtype=torch.float32).unsqueeze(0).unsqueeze(0).to(self.device)
 
         # Inference
         with torch.no_grad():
-            _, y_pred, mu, _ = self.model(mel_tensor)
+            # Model returns: x_recon, y_pred, mu, log_var
+            _, y_pred, mu, _ = self.model(x)
+            probs = y_pred.cpu().numpy()[0]
+            latent = mu.cpu().numpy()[0]
 
-        # Convert to numpy
-        probs = y_pred.cpu().numpy()[0]
-        latent = mu.cpu().numpy()[0]
+        # Build emotions dict
+        emotions = {label: float(prob) for label, prob in zip(self.EMOTION_LABELS, probs)}
 
-        # Create emotion dictionary
-        emotions = {
-            label: float(prob)
-            for label, prob in zip(self.EMOTION_LABELS, probs)
-        }
-
-        # Get dominant emotions (above threshold)
-        dominant = {
-            label: prob
-            for label, prob in emotions.items()
-            if prob > threshold
-        }
+        # Get dominant emotions
+        dominant = {k: v for k, v in emotions.items() if v >= threshold}
 
         processing_time = time.time() - start_time
 
@@ -351,7 +297,7 @@ class SERModule:
             processing_time=processing_time
         )
 
-    def predict_from_file(self, audio_path: str, threshold: float = 0.5) -> SERResult:
+    def predict_file(self, audio_path: str, threshold: float = 0.5) -> SERResult:
         """Predict emotions from audio file"""
         audio, sr = librosa.load(audio_path, sr=self.sr, mono=True)
         return self.predict(audio, sr, threshold)
@@ -361,9 +307,7 @@ class SERModule:
 # STT Module Wrapper
 # --------------------------
 class STTModule:
-    """
-    Speech-to-Text wrapper for pipeline integration
-    """
+    """Speech-to-Text wrapper for pipeline integration"""
 
     def __init__(
         self,
@@ -372,27 +316,16 @@ class STTModule:
         language: str = "vi",
         device: str = "auto"
     ):
-        """
-        Initialize STT module
-
-        Args:
-            backend: "whisper" or "vosk"
-            model_size: Whisper model size
-            language: Language code
-            device: Device for computation
-        """
-        # Try different import paths
         try:
             from STT.stt_engine import STTEngine
         except ImportError:
             try:
                 from stt_engine import STTEngine
             except ImportError:
-                # If running from Pipeline folder
                 sys.path.insert(0, str(PROJECT_ROOT / "STT"))
                 from STT.stt_engine import STTEngine
 
-        print(f"🎤 Initializing STT module ({backend}/{model_size})")
+        console.info(f"Initializing STT module ({backend}/{model_size})")
 
         self.engine = STTEngine(
             backend=backend,
@@ -403,20 +336,9 @@ class STTModule:
         self.language = language
 
     def transcribe(self, audio: np.ndarray, sr: int = 16000) -> STTResult:
-        """
-        Transcribe audio array
-
-        Args:
-            audio: Audio samples
-            sr: Sample rate
-
-        Returns:
-            STTResult with transcription
-        """
+        """Transcribe audio array"""
         start_time = time.time()
-
         result = self.engine.transcribe_array(audio, sr=sr)
-
         processing_time = time.time() - start_time
 
         return STTResult(
@@ -430,9 +352,7 @@ class STTModule:
     def transcribe_file(self, audio_path: str) -> STTResult:
         """Transcribe audio file"""
         start_time = time.time()
-
         result = self.engine.transcribe(audio_path)
-
         processing_time = time.time() - start_time
 
         return STTResult(
@@ -472,37 +392,22 @@ class EVAPipeline:
         emotion_threshold: float = 0.5,
         parallel: bool = True,
         prompts_dir: Path = None,
-        # LLM settings
         llm_backend: str = None,
         llm_model: str = None,
         llm_api_key: str = None,
-        enable_llm: bool = True
+        enable_llm: bool = True,
+        tts_backend: str = None,
+        tts_voice: str = None,
+        tts_api_key: str = None,
+        enable_tts: bool = True
     ):
-        """
-        Initialize EVA Pipeline
-
-        Args:
-            ser_checkpoint: Path to trained SER model
-            stt_backend: STT backend ("whisper" or "vosk")
-            stt_model: Whisper model size
-            language: Language code
-            device: Device for computation
-            emotion_threshold: Threshold for dominant emotions
-            parallel: Run STT and SER in parallel
-            prompts_dir: Directory containing prompt files
-            llm_backend: LLM backend (groq, gemini, ollama, etc.) - auto if None
-            llm_model: LLM model name
-            llm_api_key: API key for LLM (or use .env)
-            enable_llm: Whether to enable LLM response generation
-        """
         self.emotion_threshold = emotion_threshold
         self.parallel = parallel
         self.language = language
         self.enable_llm = enable_llm
+        self.enable_tts = enable_tts
 
-        print("\n" + "=" * 60)
-        print("🚀 Initializing EVA Pipeline")
-        print("=" * 60)
+        console.header("Initializing EVA Pipeline")
 
         # Initialize prompt manager
         self.prompt_manager = PromptManager(prompts_dir)
@@ -525,167 +430,88 @@ class EVAPipeline:
         if enable_llm:
             self._init_llm(llm_backend, llm_model, llm_api_key)
 
-        print("=" * 60)
-        print("✅ EVA Pipeline ready!")
-        print("=" * 60 + "\n")
+        # Initialize TTS
+        self.tts = None
+        if enable_tts:
+            self._init_tts(tts_backend, tts_voice, tts_api_key)
+
+        console.divider()
+        console.success("EVA Pipeline ready!")
+        console.divider()
+        print()
 
     def _init_llm(self, backend: str, model: str, api_key: str):
-        """Initialize LLM engine"""
+        """Initialize LLM backend"""
         try:
-            # Try different import paths
+            from LLM.llm_engine import LLMEngine
+        except ImportError:
             try:
-                from LLM.llm_engine import LLMEngine
+                from llm_engine import LLMEngine
             except ImportError:
-                try:
-                    from llm_engine import LLMEngine
-                except ImportError:
-                    sys.path.insert(0, str(PROJECT_ROOT / "LLM"))
-                    from LLM.llm_engine import LLMEngine
+                sys.path.insert(0, str(PROJECT_ROOT / "LLM"))
+                from LLM.llm_engine import LLMEngine
 
-            self.llm = LLMEngine(
-                backend=backend,
-                model=model,
-                api_key=api_key
-            )
-
-            if not self.llm.is_available():
-                print("⚠️  LLM not available - responses will not be generated")
-                self.llm = None
-
-        except Exception as e:
-            print(f"⚠️  Failed to initialize LLM: {e}")
-            self.llm = None
-
-    def _load_audio(self, audio_path: str) -> Tuple[np.ndarray, int]:
-        """Load audio file"""
-        audio, sr = librosa.load(audio_path, sr=16000, mono=True)
-        return audio, sr
-
-    def _process_parallel(
-        self,
-        audio: np.ndarray,
-        sr: int
-    ) -> Tuple[STTResult, SERResult]:
-        """Process STT and SER in parallel using threads"""
-
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            # Submit both tasks
-            stt_future = executor.submit(self.stt.transcribe, audio, sr)
-            ser_future = executor.submit(self.ser.predict, audio, sr, self.emotion_threshold)
-
-            # Wait for results
-            stt_result = stt_future.result()
-            ser_result = ser_future.result()
-
-        return stt_result, ser_result
-
-    def _process_sequential(
-        self,
-        audio: np.ndarray,
-        sr: int
-    ) -> Tuple[STTResult, SERResult]:
-        """Process STT and SER sequentially"""
-        stt_result = self.stt.transcribe(audio, sr)
-        ser_result = self.ser.predict(audio, sr, self.emotion_threshold)
-        return stt_result, ser_result
-
-    def _generate_llm_prompt(
-        self,
-        text: str,
-        emotions: Dict[str, float],
-        dominant_emotions: Dict[str, float]
-    ) -> str:
-        """
-        Generate context-aware prompt for LLM
-
-        Args:
-            text: Transcribed text
-            emotions: All emotion probabilities
-            dominant_emotions: Emotions above threshold
-
-        Returns:
-            Formatted prompt for LLM
-        """
-        # Get top 3 emotions
-        sorted_emotions = sorted(emotions.items(), key=lambda x: x[1], reverse=True)
-        top_emotions = sorted_emotions[:3]
-
-        # Format emotion description
-        emotion_desc = ", ".join([
-            f"{emotion} ({prob * 100:.0f}%)"
-            for emotion, prob in top_emotions
-        ])
-
-        # Determine emotional context
-        primary_emotion = top_emotions[0][0] if top_emotions else "Neutral"
-        primary_intensity = top_emotions[0][1] if top_emotions else 0.0
-
-        # Get guidelines from prompt manager
-        style_guide = self.prompt_manager.get_guidelines_for_emotion(
-            primary_emotion,
-            primary_intensity
+        self.llm = LLMEngine(
+            backend=backend,
+            model=model,
+            api_key=api_key
         )
 
-        # Build prompt
-        prompt = f"""System Context: {self.prompt_manager.system_context}
+    def _init_tts(self, backend: str, voice: str, api_key: str):
+        """Initialize TTS backend"""
+        try:
+            from TTS.tts_engine import TTSEngine
+        except ImportError:
+            try:
+                from tts_engine import TTSEngine
+            except ImportError:
+                sys.path.insert(0, str(PROJECT_ROOT / "TTS"))
+                from TTS.tts_engine import TTSEngine
 
-═══════════════════════════════════════════════════════════════════════
-EMOTIONAL ANALYSIS FROM VOICE
-═══════════════════════════════════════════════════════════════════════
-Detected emotions: {emotion_desc}
-Primary emotion: {primary_emotion} ({primary_intensity * 100:.0f}% confidence)
+        self.tts = TTSEngine(
+            backend=backend,
+            language=self.language,
+            voice=voice,
+            api_key=api_key
+        )
 
-═══════════════════════════════════════════════════════════════════════
-RESPONSE GUIDELINES
-═══════════════════════════════════════════════════════════════════════
-{style_guide}
-
-General principles:
-{self.prompt_manager.general_principles}
-
-═══════════════════════════════════════════════════════════════════════
-USER'S MESSAGE
-═══════════════════════════════════════════════════════════════════════
-{text}
-
-═══════════════════════════════════════════════════════════════════════
-YOUR EMPATHIC RESPONSE:
-"""
-
-        return prompt
-
-    def process(self, audio_path: str, generate_response: bool = True) -> PipelineResult:
+    def process(
+        self,
+        audio_path: str,
+        generate_response: bool = True,
+        generate_audio: bool = True
+    ) -> PipelineResult:
         """
-        Process audio file through the full pipeline
+        Process audio file through full pipeline
 
         Args:
             audio_path: Path to audio file
             generate_response: Whether to generate LLM response
+            generate_audio: Whether to generate TTS audio response
 
         Returns:
             PipelineResult with all outputs
         """
         start_time = time.time()
 
-        print(f"🎧 Processing: {Path(audio_path).name}")
-
         # Load audio
-        audio, sr = self._load_audio(audio_path)
-        print(f"   Duration: {len(audio) / sr:.2f}s")
+        audio, sr = librosa.load(audio_path, sr=16000, mono=True)
 
-        # Process STT and SER
+        # Run STT and SER
         if self.parallel:
-            print("   Running STT + SER in parallel...")
             stt_result, ser_result = self._process_parallel(audio, sr)
         else:
-            print("   Running STT + SER sequentially...")
-            stt_result, ser_result = self._process_sequential(audio, sr)
+            stt_result = self.stt.transcribe(audio, sr)
+            ser_result = self.ser.predict(audio, sr, self.emotion_threshold)
 
-        # Generate LLM prompt
-        llm_prompt = self._generate_llm_prompt(
+        # Get primary emotion
+        primary_emotion = max(ser_result.emotions.items(), key=lambda x: x[1])
+
+        # Build LLM prompt
+        llm_prompt = self._build_prompt(
             stt_result.text,
             ser_result.emotions,
-            ser_result.dominant_emotions
+            primary_emotion
         )
 
         # Generate LLM response
@@ -693,150 +519,140 @@ YOUR EMPATHIC RESPONSE:
         llm_result = None
 
         if generate_response and self.llm and self.llm.is_available():
-            print("   Generating empathic response...")
-            llm_result = self._generate_response(llm_prompt)
-            if llm_result:
-                llm_response = llm_result.response
+            try:
+                llm_result = self.llm.generate(llm_prompt, max_tokens=256, temperature=0.7)
+                llm_response = llm_result.text
+            except Exception as e:
+                console.warning(f"LLM generation failed: {e}")
+
+        # Generate TTS audio
+        tts_result = None
+        audio_response = None
+
+        if generate_audio and llm_response and self.tts and self.tts.is_available():
+            try:
+                tts_start = time.time()
+                tts_response = self.tts.synthesize(llm_response)
+                tts_time = time.time() - tts_start
+
+                tts_result = TTSResult(
+                    audio_data=tts_response.audio_data,
+                    format=tts_response.format,
+                    sample_rate=tts_response.sample_rate,
+                    duration=tts_response.duration,
+                    processing_time=tts_time
+                )
+                audio_response = tts_response.audio_data
+            except Exception as e:
+                console.warning(f"TTS generation failed: {e}")
 
         total_time = time.time() - start_time
 
-        # Build result
         result = PipelineResult(
             text=stt_result.text,
+            stt_result=stt_result,
+            stt_confidence=stt_result.confidence,
             emotions=ser_result.emotions,
             dominant_emotions=ser_result.dominant_emotions,
+            ser_result=ser_result,
             llm_prompt=llm_prompt,
             llm_response=llm_response,
-            stt_confidence=stt_result.confidence,
-            total_processing_time=total_time,
-            stt_result=stt_result,
-            ser_result=ser_result,
-            llm_result=llm_result
+            llm_result=llm_result,
+            tts_result=tts_result,
+            audio_response=audio_response,
+            total_processing_time=total_time
         )
 
-        # Print summary
-        self._print_summary(result)
+        # Print results
+        self._print_result(result)
 
         return result
 
-    def _generate_response(self, prompt: str) -> Optional[LLMResult]:
-        """Generate LLM response from prompt"""
-        if not self.llm:
-            return None
+    def _process_parallel(self, audio: np.ndarray, sr: int) -> Tuple[STTResult, SERResult]:
+        """Run STT and SER in parallel"""
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            stt_future = executor.submit(self.stt.transcribe, audio, sr)
+            ser_future = executor.submit(self.ser.predict, audio, sr, self.emotion_threshold)
 
-        try:
-            response = self.llm.generate(
-                prompt,
-                max_tokens=256,
-                temperature=0.7
-            )
+            stt_result = stt_future.result()
+            ser_result = ser_future.result()
 
-            return LLMResult(
-                response=response.text,
-                model=response.model,
-                latency=response.latency,
-                tokens_used=response.tokens_used
-            )
-        except Exception as e:
-            print(f"   ⚠️  LLM error: {e}")
-            return None
+        return stt_result, ser_result
 
-    def process_array(
+    def _build_prompt(
         self,
-        audio: np.ndarray,
-        sr: int = 16000,
-        generate_response: bool = True
-    ) -> PipelineResult:
-        """
-        Process audio array through the pipeline
+        text: str,
+        emotions: Dict[str, float],
+        primary_emotion: Tuple[str, float]
+    ) -> str:
+        """Build LLM prompt with context"""
+        emotion_name, emotion_score = primary_emotion
 
-        Args:
-            audio: Audio samples (mono, float)
-            sr: Sample rate
-            generate_response: Whether to generate LLM response
-
-        Returns:
-            PipelineResult
-        """
-        start_time = time.time()
-
-        # Process
-        if self.parallel:
-            stt_result, ser_result = self._process_parallel(audio, sr)
-        else:
-            stt_result, ser_result = self._process_sequential(audio, sr)
-
-        # Generate prompt
-        llm_prompt = self._generate_llm_prompt(
-            stt_result.text,
-            ser_result.emotions,
-            ser_result.dominant_emotions
+        # Get emotion-specific guidelines
+        guidelines = self.prompt_manager.get_guidelines_for_emotion(
+            emotion_name, emotion_score
         )
 
-        # Generate LLM response
-        llm_response = None
-        llm_result = None
+        # Format emotion scores
+        sorted_emotions = sorted(emotions.items(), key=lambda x: x[1], reverse=True)
+        emotion_str = ", ".join([f"{e}: {s*100:.1f}%" for e, s in sorted_emotions[:3]])
 
-        if generate_response and self.llm and self.llm.is_available():
-            llm_result = self._generate_response(llm_prompt)
-            if llm_result:
-                llm_response = llm_result.response
+        prompt = f"""{self.prompt_manager.system_context}
 
-        total_time = time.time() - start_time
+{guidelines}
 
-        return PipelineResult(
-            text=stt_result.text,
-            emotions=ser_result.emotions,
-            dominant_emotions=ser_result.dominant_emotions,
-            llm_prompt=llm_prompt,
-            llm_response=llm_response,
-            stt_confidence=stt_result.confidence,
-            total_processing_time=total_time,
-            stt_result=stt_result,
-            ser_result=ser_result,
-            llm_result=llm_result
-        )
+---
+User's emotional state: {emotion_name} ({emotion_score*100:.1f}%)
+All emotions: {emotion_str}
+User's message: {text}
+---
 
-    def _print_summary(self, result: PipelineResult):
-        """Print processing summary"""
-        print("\n" + "─" * 60)
-        print("📊 PROCESSING SUMMARY")
-        print("─" * 60)
+Provide a warm, empathic response:"""
 
-        # Text
-        print(f"\n📝 Transcription:")
-        print(f"   \"{result.text}\"")
+        return prompt
+
+    def _print_result(self, result: PipelineResult):
+        """Print formatted result"""
+        console.subheader("Processing Result")
+
+        # Transcription
+        console.info("Transcription:")
+        print(f"   {result.text}")
         if result.stt_confidence:
-            print(f"   Confidence: {result.stt_confidence:.1%}")
+            console.item("Confidence", f"{result.stt_confidence:.1%}")
 
         # Emotions
-        print(f"\n🎭 Emotions:")
+        print()
+        console.info("Emotions:")
         sorted_emotions = sorted(
             result.emotions.items(),
             key=lambda x: x[1],
             reverse=True
         )
         for emotion, prob in sorted_emotions[:4]:
-            bar = "█" * int(prob * 20)
-            print(f"   {emotion:<12} [{bar:<20}] {prob * 100:5.1f}%")
+            console.emotion(emotion, prob)
 
         # LLM Response
         if result.llm_response:
-            print(f"\n💬 EVA's Response:")
-            # Word wrap the response
+            print()
+            console.info("EVA Response:")
             response_lines = result.llm_response.strip().split('\n')
             for line in response_lines:
                 print(f"   {line}")
 
         # Timing
-        print(f"\n⏱️  Timing:")
-        print(f"   STT: {result.stt_result.processing_time:.2f}s")
-        print(f"   SER: {result.ser_result.processing_time:.2f}s")
+        print()
+        console.info("Timing:")
+        console.item("STT", f"{result.stt_result.processing_time:.2f}s")
+        console.item("SER", f"{result.ser_result.processing_time:.2f}s")
         if result.llm_result:
-            print(f"   LLM: {result.llm_result.latency:.2f}s ({result.llm_result.model})")
-        print(f"   Total: {result.total_processing_time:.2f}s")
+            console.item("LLM", f"{result.llm_result.latency:.2f}s ({result.llm_result.model})")
+        if result.tts_result:
+            console.item("TTS", f"{result.tts_result.processing_time:.2f}s ({result.tts_result.format})")
+        console.item("Total", f"{result.total_processing_time:.2f}s")
 
-        print("─" * 60 + "\n")
+        console.divider()
+        print()
 
 
 # --------------------------
@@ -844,21 +660,19 @@ YOUR EMPATHIC RESPONSE:
 # --------------------------
 def test_pipeline():
     """Quick test of the pipeline"""
-    print("\n" + "=" * 60)
-    print("🧪 EVA Pipeline Test")
-    print("=" * 60)
+    console.header("EVA Pipeline Test")
 
-    # Check for required files (relative to project root)
+    # Check for required files
     checkpoint = PROJECT_ROOT / "checkpoints" / "best_model.pth"
     test_audio = PROJECT_ROOT / "test_audio.wav"
 
     if not checkpoint.exists():
-        print(f"❌ Checkpoint not found: {checkpoint}")
-        print("   Train a model first or update the path")
+        console.error(f"Checkpoint not found: {checkpoint}")
+        console.info("Train a model first or update the path")
         return
 
     if not test_audio.exists():
-        print(f"❌ Test audio not found: {test_audio}")
+        console.error(f"Test audio not found: {test_audio}")
         return
 
     # Initialize pipeline
@@ -867,7 +681,7 @@ def test_pipeline():
         stt_model="base",
         language="vi",
         parallel=True,
-        enable_llm=True  # Enable LLM
+        enable_llm=True
     )
 
     # Process
@@ -875,17 +689,13 @@ def test_pipeline():
 
     # Show results
     if result.llm_response:
-        print("\n" + "=" * 60)
-        print("🤖 EVA'S EMPATHIC RESPONSE")
-        print("=" * 60)
+        console.header("EVA Response")
         print(result.llm_response)
     else:
-        print("\n" + "=" * 60)
-        print("📋 GENERATED LLM PROMPT (no LLM available)")
-        print("=" * 60)
+        console.header("Generated LLM Prompt (no LLM available)")
         print(result.llm_prompt)
 
-    print("\n✅ Pipeline test complete!")
+    console.success("Pipeline test complete!")
 
 
 # --------------------------
@@ -894,7 +704,7 @@ def test_pipeline():
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="EVA Pipeline - STT + SER + LLM")
+    parser = argparse.ArgumentParser(description="EVA Pipeline - STT + SER + LLM + TTS")
     parser.add_argument("audio", nargs="?", default=None, help="Audio file to process")
     parser.add_argument("--checkpoint", default="checkpoints/best_model.pth", help="SER model checkpoint")
     parser.add_argument("--stt-model", default="base", help="Whisper model size")
@@ -903,6 +713,10 @@ if __name__ == "__main__":
     parser.add_argument("--no-llm", action="store_true", help="Disable LLM response generation")
     parser.add_argument("--llm-backend", default=None, help="LLM backend (groq, gemini, ollama)")
     parser.add_argument("--llm-model", default=None, help="LLM model name")
+    parser.add_argument("--no-tts", action="store_true", help="Disable TTS audio generation")
+    parser.add_argument("--tts-backend", default=None, help="TTS backend (elevenlabs, edge, gtts)")
+    parser.add_argument("--tts-voice", default=None, help="TTS voice ID")
+    parser.add_argument("--output-audio", default=None, help="Save TTS output to file")
     parser.add_argument("--test", action="store_true", help="Run test")
 
     args = parser.parse_args()
@@ -917,13 +731,22 @@ if __name__ == "__main__":
             parallel=not args.sequential,
             enable_llm=not args.no_llm,
             llm_backend=args.llm_backend,
-            llm_model=args.llm_model
+            llm_model=args.llm_model,
+            enable_tts=not args.no_tts,
+            tts_backend=args.tts_backend,
+            tts_voice=args.tts_voice
         )
-        result = pipeline.process(args.audio)
+        result = pipeline.process(args.audio, generate_audio=not args.no_tts)
 
         if result.llm_response:
-            print("\n🤖 EVA's Response:")
+            console.header("EVA Response")
             print(result.llm_response)
+
+        # Save TTS output if requested
+        if result.audio_response and args.output_audio:
+            with open(args.output_audio, "wb") as f:
+                f.write(result.audio_response)
+            console.success(f"Audio saved to: {args.output_audio}")
     else:
         print("EVA Pipeline - Empathic Voice Assistant")
         print("=" * 50)
@@ -935,7 +758,13 @@ if __name__ == "__main__":
         print("  --llm-backend groq                        # Use Groq API")
         print("  --llm-backend ollama                      # Use local Ollama")
         print("  --no-llm                                  # Disable LLM")
-        print("\nSetup LLM:")
-        print("  1. Get free API key from https://console.groq.com/keys")
-        print("  2. Create .env file: GROQ_API_KEY=your_key")
-        print("  3. Run: python eva_pipeline.py --test")
+        print("\nTTS Options:")
+        print("  --tts-backend elevenlabs                  # Use ElevenLabs (best)")
+        print("  --tts-backend edge                        # Use Edge TTS (free)")
+        print("  --no-tts                                  # Disable TTS")
+        print("  --output-audio response.mp3               # Save audio to file")
+        print("\nSetup:")
+        print("  1. LLM: Get API key from https://console.groq.com/keys")
+        print("  2. TTS: Get API key from https://elevenlabs.io/")
+        print("  3. Create .env file with API keys")
+        print("  4. Run: python eva_pipeline.py --test")

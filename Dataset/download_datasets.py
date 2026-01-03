@@ -1,192 +1,167 @@
 """
-Robust Dataset Downloader for EVA Project
-Handles all edge cases and provides clear error messages
+Dataset Downloader for EVA Project
+
+Downloads RAVDESS, TESS, and CREMA-D emotion speech datasets.
 """
 
 import os
 import sys
-import urllib.request
+import shutil
 import zipfile
 import tarfile
 import requests
 from pathlib import Path
-from tqdm import tqdm
-import time
-import hashlib
+from typing import Tuple, Optional
+
+try:
+    from tqdm import tqdm
+except ImportError:
+    # Fallback progress indicator
+    def tqdm(iterable, **kwargs):
+        return iterable
 
 # Configuration
 OUTPUT_BASE = 'Dataset/prelabel_en'
-TEMP_DIR = 'Dataset/temp'
+TEMP_DIR = 'Dataset/.temp'
 
-class Colors:
-    """ANSI color codes for pretty printing"""
-    GREEN = '\033[92m'
-    YELLOW = '\033[93m'
-    RED = '\033[91m'
-    BLUE = '\033[94m'
-    RESET = '\033[0m'
-    BOLD = '\033[1m'
+# Add project root to path
+PROJECT_ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
 
-def print_header(text):
-    print(f"\n{Colors.BOLD}{Colors.BLUE}{'='*70}{Colors.RESET}")
-    print(f"{Colors.BOLD}{Colors.BLUE}{text}{Colors.RESET}")
-    print(f"{Colors.BOLD}{Colors.BLUE}{'='*70}{Colors.RESET}\n")
+try:
+    from console import console, Colors
+except ImportError:
+    # Fallback console
+    class Colors:
+        GREEN = '\033[92m'
+        YELLOW = '\033[93m'
+        RED = '\033[91m'
+        CYAN = '\033[96m'
+        RESET = '\033[0m'
+        BOLD = '\033[1m'
+        DIM = '\033[2m'
 
-def print_success(text):
-    print(f"{Colors.GREEN}✓ {text}{Colors.RESET}")
+    class Console:
+        def info(self, msg, indent=0): print(f"{'  '*indent}[*] {msg}")
+        def success(self, msg, indent=0): print(f"{'  '*indent}[+] {msg}")
+        def warning(self, msg, indent=0): print(f"{'  '*indent}[!] {msg}")
+        def error(self, msg, indent=0): print(f"{'  '*indent}[-] {msg}")
+        def header(self, title, width=70):
+            print(f"\n{Colors.CYAN}{'='*width}{Colors.RESET}")
+            print(f"{Colors.BOLD}{title.center(width)}{Colors.RESET}")
+            print(f"{Colors.CYAN}{'='*width}{Colors.RESET}")
+        def subheader(self, title, width=70):
+            print(f"\n{Colors.CYAN}{'-'*width}{Colors.RESET}")
+            print(f"{title}")
+            print(f"{Colors.CYAN}{'-'*width}{Colors.RESET}")
+        def item(self, label, value, indent=1): print(f"{'  '*indent}{label}: {value}")
+        def list_item(self, msg, indent=1): print(f"{'  '*indent}- {msg}")
+        def progress_bar(self, current, total, width=30, label=""):
+            filled = int(width * current / total)
+            bar = "█" * filled + "░" * (width - filled)
+            percent = current / total * 100
+            print(f"\r[{bar}] {percent:5.1f}% {label}", end="", flush=True)
+            if current >= total:
+                print()
+    console = Console()
 
-def print_error(text):
-    print(f"{Colors.RED}✗ {text}{Colors.RESET}")
 
-def print_warning(text):
-    print(f"{Colors.YELLOW}⚠ {text}{Colors.RESET}")
-
-def print_info(text):
-    print(f"{Colors.BLUE}ℹ {text}{Colors.RESET}")
-
-
-class DownloadProgressBar(tqdm):
-    """Progress bar for downloads"""
-    def update_to(self, b=1, bsize=1, tsize=None):
-        if tsize is not None:
-            self.total = tsize
-        self.update(b * bsize - self.n)
+# Legacy print functions for compatibility
+def print_success(text): console.success(text)
+def print_error(text): console.error(text)
+def print_warning(text): console.warning(text)
+def print_info(text): console.info(text)
+def print_header(text): console.header(text)
 
 
-def check_disk_space(required_gb=5):
-    """Check if enough disk space available"""
+# ============================================================================
+# Utility Functions
+# ============================================================================
+def check_disk_space(required_gb: float, path: str = ".") -> bool:
+    """Check if sufficient disk space is available"""
     try:
         import shutil
-        stat = shutil.disk_usage('.')
-        free_gb = stat.free / (1024**3)
+        total, used, free = shutil.disk_usage(path)
+        free_gb = free / (1024 ** 3)
 
         if free_gb < required_gb:
-            print_warning(f"Low disk space: {free_gb:.1f}GB free (need ~{required_gb}GB)")
+            console.warning(f"Low disk space: {free_gb:.1f}GB free, {required_gb}GB required")
             return False
         return True
-    except:
-        return True  # Skip check if unable to determine
+    except Exception:
+        return True
 
 
-def download_file(url, output_path, timeout=300, max_retries=3):
-    """
-    Download file with retry logic and proper error handling
-    """
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-
-    for attempt in range(max_retries):
-        try:
-            print_info(f"Downloading from: {url}")
-            print_info(f"Saving to: {output_path}")
-
-            # Try with requests first (better error handling)
-            response = requests.get(url, stream=True, timeout=timeout)
-            response.raise_for_status()
-
-            total_size = int(response.headers.get('content-length', 0))
-
-            with open(output_path, 'wb') as f, tqdm(
-                desc="Downloading",
-                total=total_size,
-                unit='B',
-                unit_scale=True,
-                unit_divisor=1024,
-            ) as pbar:
-                for chunk in response.iter_content(chunk_size=8192):
-                    size = f.write(chunk)
-                    pbar.update(size)
-
-            print_success(f"Downloaded successfully!")
-            return True
-
-        except requests.exceptions.Timeout:
-            print_error(f"Timeout error (attempt {attempt+1}/{max_retries})")
-            if attempt < max_retries - 1:
-                print_info("Retrying in 5 seconds...")
-                time.sleep(5)
-
-        except requests.exceptions.ConnectionError:
-            print_error(f"Connection error (attempt {attempt+1}/{max_retries})")
-            if attempt < max_retries - 1:
-                print_info("Retrying in 5 seconds...")
-                time.sleep(5)
-
-        except requests.exceptions.HTTPError as e:
-            print_error(f"HTTP Error: {e}")
-            return False
-
-        except Exception as e:
-            print_error(f"Unexpected error: {e}")
-            if attempt < max_retries - 1:
-                print_info("Retrying...")
-                time.sleep(5)
-
-    return False
-
-
-def extract_archive(archive_path, extract_to, remove_after=True):
-    """
-    Extract zip/tar archives with progress bar
-    """
-    print_info(f"Extracting {os.path.basename(archive_path)}...")
-
+def download_file(url: str, output_path: str, timeout: int = 300) -> bool:
+    """Download file with progress bar"""
     try:
-        if archive_path.endswith('.zip'):
-            with zipfile.ZipFile(archive_path, 'r') as zip_ref:
-                members = zip_ref.namelist()
-                for member in tqdm(members, desc="Extracting"):
-                    try:
-                        zip_ref.extract(member, extract_to)
-                    except:
-                        # Skip problematic files
-                        continue
+        response = requests.get(url, stream=True, timeout=timeout)
+        response.raise_for_status()
 
-        elif archive_path.endswith(('.tar.gz', '.tgz')):
-            with tarfile.open(archive_path, 'r:gz') as tar_ref:
-                tar_ref.extractall(extract_to)
+        total_size = int(response.headers.get('content-length', 0))
 
-        elif archive_path.endswith('.tar'):
-            with tarfile.open(archive_path, 'r') as tar_ref:
-                tar_ref.extractall(extract_to)
-
-        print_success(f"Extracted to {extract_to}")
-
-        # Clean up archive
-        if remove_after:
-            os.remove(archive_path)
-            print_info("Removed archive file")
+        with open(output_path, 'wb') as f:
+            if total_size == 0:
+                f.write(response.content)
+            else:
+                downloaded = 0
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        console.progress_bar(downloaded, total_size, label=Path(output_path).name)
 
         return True
-
     except Exception as e:
-        print_error(f"Extraction failed: {e}")
+        console.error(f"Download failed: {e}")
         return False
 
 
-def verify_dataset(dataset_dir, expected_files=None, min_wav_count=100):
-    """
-    Verify that dataset was downloaded correctly
-    """
+def extract_archive(archive_path: str, output_dir: str) -> bool:
+    """Extract zip or tar archive"""
+    try:
+        console.info(f"Extracting to {output_dir}...")
+
+        if archive_path.endswith('.zip'):
+            with zipfile.ZipFile(archive_path, 'r') as zf:
+                zf.extractall(output_dir)
+        elif archive_path.endswith(('.tar.gz', '.tgz')):
+            with tarfile.open(archive_path, 'r:gz') as tf:
+                tf.extractall(output_dir)
+        elif archive_path.endswith('.tar'):
+            with tarfile.open(archive_path, 'r') as tf:
+                tf.extractall(output_dir)
+        else:
+            console.error(f"Unknown archive format: {archive_path}")
+            return False
+
+        console.success("Extraction complete")
+        return True
+    except Exception as e:
+        console.error(f"Extraction failed: {e}")
+        return False
+
+
+def verify_dataset(dataset_dir: str, min_wav_count: int = 100) -> Tuple[bool, str]:
+    """Verify dataset was downloaded correctly"""
     if not os.path.exists(dataset_dir):
-        return False, "Directory does not exist"
+        return False, "Directory not found"
 
     wav_files = list(Path(dataset_dir).rglob('*.wav'))
-    wav_count = len(wav_files)
+    count = len(wav_files)
 
-    if wav_count < min_wav_count:
-        return False, f"Only {wav_count} .wav files found (expected >{min_wav_count})"
+    if count < min_wav_count:
+        return False, f"Only {count} .wav files found (expected >= {min_wav_count})"
 
-    return True, f"Found {wav_count} .wav files"
+    return True, f"{count} .wav files found"
 
 
 # ============================================================================
 # RAVDESS Downloader
 # ============================================================================
 def download_ravdess():
-    """
-    Download RAVDESS from Zenodo (most reliable source)
-    """
-    print_header("📥 DOWNLOADING RAVDESS")
+    """Download RAVDESS dataset from Zenodo"""
+    console.header("DOWNLOADING RAVDESS")
 
     output_dir = f"{OUTPUT_BASE}/RAVDESS"
     os.makedirs(output_dir, exist_ok=True)
@@ -194,46 +169,47 @@ def download_ravdess():
     # Check if already downloaded
     is_valid, msg = verify_dataset(output_dir, min_wav_count=1400)
     if is_valid:
-        print_success(f"RAVDESS already downloaded! ({msg})")
+        console.success(f"RAVDESS already downloaded! ({msg})")
         return True
 
-    print_info("Dataset: Ryerson Audio-Visual Database of Emotional Speech and Song")
-    print_info("Size: ~1.5GB | Samples: ~1,440 files")
-    print_info("Source: Zenodo (https://zenodo.org/record/1188976)")
+    console.info("Dataset: Ryerson Audio-Visual Database of Emotional Speech")
+    console.info("Size: ~1.5GB | Samples: ~1,440 files")
+    console.info("Source: Zenodo")
 
-    # URL
-    url = "https://zenodo.org/record/1188976/files/Audio_Speech_Actors_01-24.zip"
-    zip_path = f"{TEMP_DIR}/ravdess.zip"
+    # URLs for each actor (split into smaller files)
+    base_url = "https://zenodo.org/record/1188976/files"
 
-    # Download
-    os.makedirs(TEMP_DIR, exist_ok=True)
-    success = download_file(url, zip_path)
+    console.info("Downloading actor files...")
 
-    if not success:
-        print_error("Download failed!")
-        print_manual_instructions_ravdess()
-        return False
+    success_count = 0
+    for actor_num in range(1, 25):
+        actor_file = f"Audio_Speech_Actors_{actor_num:02d}.zip"
+        url = f"{base_url}/{actor_file}"
+        zip_path = f"{TEMP_DIR}/{actor_file}"
 
-    # Extract
-    success = extract_archive(zip_path, output_dir)
+        os.makedirs(TEMP_DIR, exist_ok=True)
 
-    if not success:
-        print_error("Extraction failed!")
-        return False
+        console.info(f"Actor {actor_num:02d}/24", indent=1)
+
+        if download_file(url, zip_path, timeout=120):
+            if extract_archive(zip_path, output_dir):
+                success_count += 1
+                os.remove(zip_path)
 
     # Verify
     is_valid, msg = verify_dataset(output_dir, min_wav_count=1400)
     if is_valid:
-        print_success(f"RAVDESS downloaded successfully! ({msg})")
+        console.success(f"RAVDESS downloaded successfully! ({msg})")
         return True
     else:
-        print_error(f"Verification failed: {msg}")
+        console.error(f"Verification failed: {msg}")
+        print_manual_instructions_ravdess()
         return False
 
 
 def print_manual_instructions_ravdess():
     """Print manual download instructions for RAVDESS"""
-    print_warning("\nMANUAL DOWNLOAD INSTRUCTIONS:")
+    console.warning("MANUAL DOWNLOAD INSTRUCTIONS:")
     print("1. Visit: https://zenodo.org/record/1188976")
     print("2. Download: 'Audio_Speech_Actors_01-24.zip' (~1.5GB)")
     print(f"3. Extract to: {OUTPUT_BASE}/RAVDESS/")
@@ -241,13 +217,11 @@ def print_manual_instructions_ravdess():
 
 
 # ============================================================================
-# TESS Downloader (Multiple Methods)
+# TESS Downloader
 # ============================================================================
 def download_tess():
-    """
-    Download TESS with fallback methods
-    """
-    print_header("📥 DOWNLOADING TESS")
+    """Download TESS with fallback methods"""
+    console.header("DOWNLOADING TESS")
 
     output_dir = f"{OUTPUT_BASE}/TESS"
     os.makedirs(output_dir, exist_ok=True)
@@ -255,24 +229,24 @@ def download_tess():
     # Check if already downloaded
     is_valid, msg = verify_dataset(output_dir, min_wav_count=2500)
     if is_valid:
-        print_success(f"TESS already downloaded! ({msg})")
+        console.success(f"TESS already downloaded! ({msg})")
         return True
 
-    print_info("Dataset: Toronto Emotional Speech Set")
-    print_info("Size: ~400MB | Samples: ~2,800 files")
+    console.info("Dataset: Toronto Emotional Speech Set")
+    console.info("Size: ~400MB | Samples: ~2,800 files")
 
     # Method 1: Try Kaggle API
-    print_info("\n[Method 1/3] Trying Kaggle API...")
+    console.info("[Method 1/3] Trying Kaggle API...")
     if download_tess_kaggle(output_dir):
         return True
 
     # Method 2: Try Hugging Face
-    print_info("\n[Method 2/3] Trying Hugging Face...")
+    console.info("[Method 2/3] Trying Hugging Face...")
     if download_tess_huggingface(output_dir):
         return True
 
     # Method 3: Manual instructions
-    print_warning("\n[Method 3/3] Automatic download failed")
+    console.warning("[Method 3/3] Automatic download failed")
     print_manual_instructions_tess()
     return False
 
@@ -282,11 +256,11 @@ def download_tess_kaggle(output_dir):
     try:
         from kaggle.api.kaggle_api_extended import KaggleApi
 
-        print_info("Authenticating with Kaggle...")
+        console.info("Authenticating with Kaggle...")
         api = KaggleApi()
         api.authenticate()
 
-        print_info("Downloading from Kaggle...")
+        console.info("Downloading from Kaggle...")
         api.dataset_download_files(
             'ejlok1/toronto-emotional-speech-set-tess',
             path=output_dir,
@@ -296,16 +270,16 @@ def download_tess_kaggle(output_dir):
         # Verify
         is_valid, msg = verify_dataset(output_dir, min_wav_count=2500)
         if is_valid:
-            print_success(f"TESS downloaded via Kaggle! ({msg})")
+            console.success(f"TESS downloaded via Kaggle! ({msg})")
             return True
 
         return False
 
     except ImportError:
-        print_warning("Kaggle API not installed (pip install kaggle)")
+        console.warning("Kaggle API not installed (pip install kaggle)")
         return False
     except Exception as e:
-        print_warning(f"Kaggle download failed: {e}")
+        console.warning(f"Kaggle download failed: {e}")
         return False
 
 
@@ -315,10 +289,10 @@ def download_tess_huggingface(output_dir):
         from datasets import load_dataset
         import soundfile as sf
 
-        print_info("Loading from Hugging Face...")
+        console.info("Loading from Hugging Face...")
         dataset = load_dataset("DynamicSuperb/EmotionRecognition_TESS", split="test")
 
-        print_info(f"Processing {len(dataset)} samples...")
+        console.info(f"Processing {len(dataset)} samples...")
 
         # Organize by emotion
         emotions = {}
@@ -341,21 +315,21 @@ def download_tess_huggingface(output_dir):
                 sf.write(output_file, audio['array'], audio['sampling_rate'])
                 file_count += 1
 
-        print_success(f"TESS downloaded via Hugging Face! ({file_count} files)")
+        console.success(f"TESS downloaded via Hugging Face! ({file_count} files)")
         return True
 
     except ImportError as e:
-        print_warning(f"Missing library: {e}")
-        print_info("Install: pip install datasets soundfile")
+        console.warning(f"Missing library: {e}")
+        console.info("Install: pip install datasets soundfile")
         return False
     except Exception as e:
-        print_warning(f"Hugging Face download failed: {e}")
+        console.warning(f"Hugging Face download failed: {e}")
         return False
 
 
 def print_manual_instructions_tess():
     """Print manual download instructions for TESS"""
-    print_warning("\nMANUAL DOWNLOAD INSTRUCTIONS:")
+    console.warning("MANUAL DOWNLOAD INSTRUCTIONS:")
     print("\n[Option 1] Kaggle (Recommended):")
     print("  1. Install: pip install kaggle")
     print("  2. Setup API key:")
@@ -379,10 +353,8 @@ def print_manual_instructions_tess():
 # CREMA-D Downloader
 # ============================================================================
 def download_crema_d():
-    """
-    Download CREMA-D from TalkBank
-    """
-    print_header("📥 DOWNLOADING CREMA-D")
+    """Download CREMA-D from TalkBank"""
+    console.header("DOWNLOADING CREMA-D")
 
     output_dir = f"{OUTPUT_BASE}/CREMA-D"
     os.makedirs(output_dir, exist_ok=True)
@@ -390,18 +362,18 @@ def download_crema_d():
     # Check if already downloaded
     is_valid, msg = verify_dataset(output_dir, min_wav_count=7000)
     if is_valid:
-        print_success(f"CREMA-D already downloaded! ({msg})")
+        console.success(f"CREMA-D already downloaded! ({msg})")
         return True
 
-    print_info("Dataset: Crowd Sourced Emotional Multimodal Actors Dataset")
-    print_info("Size: ~2GB | Samples: ~7,442 files")
-    print_info("Source: TalkBank (https://media.talkbank.org)")
-    print_warning("Note: Large file, download may take 10-30 minutes")
+    console.info("Dataset: Crowd Sourced Emotional Multimodal Actors Dataset")
+    console.info("Size: ~2GB | Samples: ~7,442 files")
+    console.info("Source: TalkBank (https://media.talkbank.org)")
+    console.warning("Note: Large file, download may take 10-30 minutes")
 
     # Ask user confirmation
     response = input("\nProceed with download? [y/N]: ").strip().lower()
     if response != 'y':
-        print_info("Skipping CREMA-D download")
+        console.info("Skipping CREMA-D download")
         return False
 
     # URL
@@ -413,7 +385,7 @@ def download_crema_d():
     success = download_file(url, zip_path, timeout=600)  # 10min timeout
 
     if not success:
-        print_error("Download failed!")
+        console.error("Download failed!")
         print_manual_instructions_crema()
         return False
 
@@ -421,22 +393,22 @@ def download_crema_d():
     success = extract_archive(zip_path, output_dir)
 
     if not success:
-        print_error("Extraction failed!")
+        console.error("Extraction failed!")
         return False
 
     # Verify
     is_valid, msg = verify_dataset(output_dir, min_wav_count=7000)
     if is_valid:
-        print_success(f"CREMA-D downloaded successfully! ({msg})")
+        console.success(f"CREMA-D downloaded successfully! ({msg})")
         return True
     else:
-        print_error(f"Verification failed: {msg}")
+        console.error(f"Verification failed: {msg}")
         return False
 
 
 def print_manual_instructions_crema():
     """Print manual download instructions for CREMA-D"""
-    print_warning("\nMANUAL DOWNLOAD INSTRUCTIONS:")
+    console.warning("MANUAL DOWNLOAD INSTRUCTIONS:")
     print("1. Visit: https://github.com/CheyneyComputerScience/CREMA-D")
     print("2. Or direct link: https://media.talkbank.org/ca/CREMA/AudioWAV.zip")
     print("3. Download AudioWAV.zip (~2GB)")
@@ -448,20 +420,20 @@ def print_manual_instructions_crema():
 # ============================================================================
 def main():
     """Main download orchestrator"""
-    print_header("🎯 EVA PROJECT - DATASET DOWNLOADER")
+    console.header("EVA PROJECT - DATASET DOWNLOADER")
 
     print("This script will download:")
-    print("  1. RAVDESS  (~1.5GB) - 1,440 samples")
-    print("  2. TESS     (~400MB) - 2,800 samples")
-    print("  3. CREMA-D  (~2GB)   - 7,442 samples")
-    print("\nTotal: ~4GB, ~11,682 audio samples")
-    print(f"\nOutput directory: {OUTPUT_BASE}/")
+    console.list_item("RAVDESS  (~1.5GB) - 1,440 samples")
+    console.list_item("TESS     (~400MB) - 2,800 samples")
+    console.list_item("CREMA-D  (~2GB)   - 7,442 samples")
+    print(f"\nTotal: ~4GB, ~11,682 audio samples")
+    print(f"Output directory: {OUTPUT_BASE}/")
 
     # Check disk space
     if not check_disk_space(5):
         response = input("\nContinue anyway? [y/N]: ").strip().lower()
         if response != 'y':
-            print_info("Cancelled by user")
+            console.info("Cancelled by user")
             return
 
     # Create directories
@@ -471,18 +443,18 @@ def main():
     # Download each dataset
     results = {}
 
-    print_info("\nStarting downloads...\n")
+    console.info("Starting downloads...")
 
     results['RAVDESS'] = download_ravdess()
     results['TESS'] = download_tess()
     results['CREMA-D'] = download_crema_d()
 
     # Summary
-    print_header("📊 DOWNLOAD SUMMARY")
+    console.header("DOWNLOAD SUMMARY")
 
     for dataset, success in results.items():
-        status = f"{Colors.GREEN}✓ SUCCESS{Colors.RESET}" if success else f"{Colors.RED}✗ FAILED{Colors.RESET}"
-        print(f"  {dataset:12s}: {status}")
+        status = f"{Colors.GREEN}SUCCESS{Colors.RESET}" if success else f"{Colors.RED}FAILED{Colors.RESET}"
+        print(f"  {dataset:12s}: [{status}]")
 
     successful = sum(results.values())
     total = len(results)
@@ -490,7 +462,7 @@ def main():
     print(f"\n  Total: {successful}/{total} datasets downloaded successfully")
 
     # Verification
-    print_header("📁 VERIFICATION")
+    console.subheader("VERIFICATION")
 
     total_files = 0
     for dataset_name in ['RAVDESS', 'TESS', 'CREMA-D']:
@@ -501,26 +473,25 @@ def main():
             total_files += count
             print(f"  {dataset_name:12s}: {count:5d} .wav files")
         else:
-            print(f"  {dataset_name:12s}: {Colors.YELLOW}⚠ Not found{Colors.RESET}")
+            print(f"  {dataset_name:12s}: {Colors.YELLOW}Not found{Colors.RESET}")
 
     print(f"\n  Total audio files: {total_files}")
 
     # Next steps
     if successful >= 2:
-        print_header("✅ READY FOR NEXT STEP")
-        print("\n🚀 Run next:")
+        console.header("READY FOR NEXT STEP")
+        print("\nRun next:")
         print(f"   python Dataset/prepare_dataset.py")
     else:
-        print_header("⚠ INCOMPLETE DOWNLOAD")
+        console.header("INCOMPLETE DOWNLOAD")
         print("\nPlease complete manual downloads for failed datasets")
         print("Then run this script again to verify")
 
     # Cleanup temp directory
     try:
-        import shutil
         if os.path.exists(TEMP_DIR):
             shutil.rmtree(TEMP_DIR)
-            print_info(f"\nCleaned up temporary files")
+            console.info("Cleaned up temporary files")
     except:
         pass
 
@@ -540,21 +511,21 @@ if __name__ == "__main__":
             download_crema_d()
         elif command == '--verify':
             # Verify all datasets
-            print_header("📁 VERIFYING DATASETS")
+            console.header("VERIFYING DATASETS")
             for name in ['RAVDESS', 'TESS', 'CREMA-D']:
                 dataset_dir = f"{OUTPUT_BASE}/{name}"
                 is_valid, msg = verify_dataset(dataset_dir, min_wav_count=100)
-                status = f"{Colors.GREEN}✓{Colors.RESET}" if is_valid else f"{Colors.RED}✗{Colors.RESET}"
-                print(f"  {name:12s} {status} {msg}")
+                status = f"{Colors.GREEN}OK{Colors.RESET}" if is_valid else f"{Colors.RED}FAIL{Colors.RESET}"
+                print(f"  {name:12s} [{status}] {msg}")
         elif command in ['--help', '-h']:
             print("Usage:")
-            print("  python download_datasets_robust.py              # Download all")
-            print("  python download_datasets_robust.py --ravdess    # RAVDESS only")
-            print("  python download_datasets_robust.py --tess       # TESS only")
-            print("  python download_datasets_robust.py --crema      # CREMA-D only")
-            print("  python download_datasets_robust.py --verify     # Verify downloads")
+            print("  python download_datasets.py              # Download all")
+            print("  python download_datasets.py --ravdess    # RAVDESS only")
+            print("  python download_datasets.py --tess       # TESS only")
+            print("  python download_datasets.py --crema      # CREMA-D only")
+            print("  python download_datasets.py --verify     # Verify downloads")
         else:
-            print_error(f"Unknown command: {command}")
+            console.error(f"Unknown command: {command}")
             print("Use --help for usage information")
     else:
         main()
