@@ -66,6 +66,16 @@ class SERResult:
 
 
 @dataclass
+class TTSResult:
+    """Text-to-Speech result"""
+    audio_data: bytes
+    format: str
+    sample_rate: int
+    duration: Optional[float]
+    processing_time: float
+
+
+@dataclass
 class PipelineResult:
     """Complete pipeline result"""
     # STT
@@ -83,8 +93,12 @@ class PipelineResult:
     llm_response: Optional[str]
     llm_result: Optional[object]
 
+    # TTS
+    tts_result: Optional[TTSResult] = None
+    audio_response: Optional[bytes] = None
+
     # Meta
-    total_processing_time: float
+    total_processing_time: float = 0.0
 
 
 # --------------------------
@@ -381,12 +395,17 @@ class EVAPipeline:
         llm_backend: str = None,
         llm_model: str = None,
         llm_api_key: str = None,
-        enable_llm: bool = True
+        enable_llm: bool = True,
+        tts_backend: str = None,
+        tts_voice: str = None,
+        tts_api_key: str = None,
+        enable_tts: bool = True
     ):
         self.emotion_threshold = emotion_threshold
         self.parallel = parallel
         self.language = language
         self.enable_llm = enable_llm
+        self.enable_tts = enable_tts
 
         console.header("Initializing EVA Pipeline")
 
@@ -411,6 +430,11 @@ class EVAPipeline:
         if enable_llm:
             self._init_llm(llm_backend, llm_model, llm_api_key)
 
+        # Initialize TTS
+        self.tts = None
+        if enable_tts:
+            self._init_tts(tts_backend, tts_voice, tts_api_key)
+
         console.divider()
         console.success("EVA Pipeline ready!")
         console.divider()
@@ -433,10 +457,29 @@ class EVAPipeline:
             api_key=api_key
         )
 
+    def _init_tts(self, backend: str, voice: str, api_key: str):
+        """Initialize TTS backend"""
+        try:
+            from TTS.tts_engine import TTSEngine
+        except ImportError:
+            try:
+                from tts_engine import TTSEngine
+            except ImportError:
+                sys.path.insert(0, str(PROJECT_ROOT / "TTS"))
+                from TTS.tts_engine import TTSEngine
+
+        self.tts = TTSEngine(
+            backend=backend,
+            language=self.language,
+            voice=voice,
+            api_key=api_key
+        )
+
     def process(
         self,
         audio_path: str,
-        generate_response: bool = True
+        generate_response: bool = True,
+        generate_audio: bool = True
     ) -> PipelineResult:
         """
         Process audio file through full pipeline
@@ -444,6 +487,7 @@ class EVAPipeline:
         Args:
             audio_path: Path to audio file
             generate_response: Whether to generate LLM response
+            generate_audio: Whether to generate TTS audio response
 
         Returns:
             PipelineResult with all outputs
@@ -481,6 +525,27 @@ class EVAPipeline:
             except Exception as e:
                 console.warning(f"LLM generation failed: {e}")
 
+        # Generate TTS audio
+        tts_result = None
+        audio_response = None
+
+        if generate_audio and llm_response and self.tts and self.tts.is_available():
+            try:
+                tts_start = time.time()
+                tts_response = self.tts.synthesize(llm_response)
+                tts_time = time.time() - tts_start
+
+                tts_result = TTSResult(
+                    audio_data=tts_response.audio_data,
+                    format=tts_response.format,
+                    sample_rate=tts_response.sample_rate,
+                    duration=tts_response.duration,
+                    processing_time=tts_time
+                )
+                audio_response = tts_response.audio_data
+            except Exception as e:
+                console.warning(f"TTS generation failed: {e}")
+
         total_time = time.time() - start_time
 
         result = PipelineResult(
@@ -493,6 +558,8 @@ class EVAPipeline:
             llm_prompt=llm_prompt,
             llm_response=llm_response,
             llm_result=llm_result,
+            tts_result=tts_result,
+            audio_response=audio_response,
             total_processing_time=total_time
         )
 
@@ -580,6 +647,8 @@ Provide a warm, empathic response:"""
         console.item("SER", f"{result.ser_result.processing_time:.2f}s")
         if result.llm_result:
             console.item("LLM", f"{result.llm_result.latency:.2f}s ({result.llm_result.model})")
+        if result.tts_result:
+            console.item("TTS", f"{result.tts_result.processing_time:.2f}s ({result.tts_result.format})")
         console.item("Total", f"{result.total_processing_time:.2f}s")
 
         console.divider()
@@ -635,7 +704,7 @@ def test_pipeline():
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="EVA Pipeline - STT + SER + LLM")
+    parser = argparse.ArgumentParser(description="EVA Pipeline - STT + SER + LLM + TTS")
     parser.add_argument("audio", nargs="?", default=None, help="Audio file to process")
     parser.add_argument("--checkpoint", default="checkpoints/best_model.pth", help="SER model checkpoint")
     parser.add_argument("--stt-model", default="base", help="Whisper model size")
@@ -644,6 +713,10 @@ if __name__ == "__main__":
     parser.add_argument("--no-llm", action="store_true", help="Disable LLM response generation")
     parser.add_argument("--llm-backend", default=None, help="LLM backend (groq, gemini, ollama)")
     parser.add_argument("--llm-model", default=None, help="LLM model name")
+    parser.add_argument("--no-tts", action="store_true", help="Disable TTS audio generation")
+    parser.add_argument("--tts-backend", default=None, help="TTS backend (elevenlabs, edge, gtts)")
+    parser.add_argument("--tts-voice", default=None, help="TTS voice ID")
+    parser.add_argument("--output-audio", default=None, help="Save TTS output to file")
     parser.add_argument("--test", action="store_true", help="Run test")
 
     args = parser.parse_args()
@@ -658,13 +731,22 @@ if __name__ == "__main__":
             parallel=not args.sequential,
             enable_llm=not args.no_llm,
             llm_backend=args.llm_backend,
-            llm_model=args.llm_model
+            llm_model=args.llm_model,
+            enable_tts=not args.no_tts,
+            tts_backend=args.tts_backend,
+            tts_voice=args.tts_voice
         )
-        result = pipeline.process(args.audio)
+        result = pipeline.process(args.audio, generate_audio=not args.no_tts)
 
         if result.llm_response:
             console.header("EVA Response")
             print(result.llm_response)
+
+        # Save TTS output if requested
+        if result.audio_response and args.output_audio:
+            with open(args.output_audio, "wb") as f:
+                f.write(result.audio_response)
+            console.success(f"Audio saved to: {args.output_audio}")
     else:
         print("EVA Pipeline - Empathic Voice Assistant")
         print("=" * 50)
@@ -676,7 +758,13 @@ if __name__ == "__main__":
         print("  --llm-backend groq                        # Use Groq API")
         print("  --llm-backend ollama                      # Use local Ollama")
         print("  --no-llm                                  # Disable LLM")
-        print("\nSetup LLM:")
-        print("  1. Get free API key from https://console.groq.com/keys")
-        print("  2. Create .env file: GROQ_API_KEY=your_key")
-        print("  3. Run: python eva_pipeline.py --test")
+        print("\nTTS Options:")
+        print("  --tts-backend elevenlabs                  # Use ElevenLabs (best)")
+        print("  --tts-backend edge                        # Use Edge TTS (free)")
+        print("  --no-tts                                  # Disable TTS")
+        print("  --output-audio response.mp3               # Save audio to file")
+        print("\nSetup:")
+        print("  1. LLM: Get API key from https://console.groq.com/keys")
+        print("  2. TTS: Get API key from https://elevenlabs.io/")
+        print("  3. Create .env file with API keys")
+        print("  4. Run: python eva_pipeline.py --test")

@@ -12,10 +12,11 @@ Endpoints:
 
 import os
 import sys
+import io
 import tempfile
 import time
 from pathlib import Path
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Tuple
 from contextlib import asynccontextmanager
 import asyncio
 
@@ -53,6 +54,7 @@ class ProcessingTimes(BaseModel):
     stt: float
     ser: float
     llm: Optional[float] = None
+    tts: Optional[float] = None
     total: float
 
 
@@ -74,9 +76,31 @@ class ProcessResponse(BaseModel):
     eva_response: Optional[str] = None
     llm_model: Optional[str] = None
 
+    # TTS response
+    has_audio: bool = False
+    audio_format: Optional[str] = None
+    audio_size: Optional[int] = None
+
     # Metadata
     processing_times: ProcessingTimes
     audio_duration: Optional[float] = None
+
+
+class TTSRequest(BaseModel):
+    """TTS synthesis request"""
+    text: str
+    voice: Optional[str] = None
+    language: Optional[str] = "vi"
+
+
+class TTSResponse(BaseModel):
+    """TTS synthesis response metadata"""
+    success: bool
+    format: str
+    sample_rate: int
+    size: int
+    characters: int
+    latency: float
 
 
 class HealthResponse(BaseModel):
@@ -84,6 +108,14 @@ class HealthResponse(BaseModel):
     status: str
     version: str
     components: Dict[str, bool]
+
+
+class VoiceInfo(BaseModel):
+    """Voice information"""
+    voice_id: str
+    name: str
+    category: Optional[str] = None
+    locale: Optional[str] = None
 
 
 class ConfigResponse(BaseModel):
@@ -95,6 +127,8 @@ class ConfigResponse(BaseModel):
     llm_backend: Optional[str]
     llm_model: Optional[str]
     llm_available: bool
+    tts_backend: Optional[str]
+    tts_available: bool
 
 
 class ErrorResponse(BaseModel):
@@ -129,11 +163,14 @@ def init_pipeline():
     language = os.getenv("LANGUAGE", "vi")
     llm_backend = os.getenv("LLM_BACKEND", None)
     llm_model = os.getenv("LLM_MODEL", None)
+    tts_backend = os.getenv("TTS_BACKEND", None)
+    tts_voice = os.getenv("TTS_VOICE", None)
 
     console.info("Initializing EVA API Server")
     console.item("Checkpoint", checkpoint_path)
     console.item("STT Model", stt_model)
     console.item("Language", language)
+    console.item("TTS Backend", tts_backend or "auto")
 
     pipeline = EVAPipeline(
         ser_checkpoint=checkpoint_path,
@@ -142,7 +179,10 @@ def init_pipeline():
         parallel=True,
         enable_llm=True,
         llm_backend=llm_backend,
-        llm_model=llm_model
+        llm_model=llm_model,
+        enable_tts=True,
+        tts_backend=tts_backend,
+        tts_voice=tts_voice
     )
 
     return pipeline
@@ -205,7 +245,11 @@ def format_emotions(emotions: Dict[str, float]) -> List[EmotionScore]:
     ]
 
 
-async def process_audio_file(file: UploadFile, generate_response: bool = True) -> ProcessResponse:
+async def process_audio_file(
+    file: UploadFile,
+    generate_response: bool = True,
+    generate_audio: bool = False
+) -> tuple[ProcessResponse, Optional[bytes]]:
     """Process uploaded audio file"""
     global pipeline
 
@@ -222,7 +266,11 @@ async def process_audio_file(file: UploadFile, generate_response: bool = True) -
 
     try:
         # Process through pipeline
-        result = pipeline.process(tmp_path, generate_response=generate_response)
+        result = pipeline.process(
+            tmp_path,
+            generate_response=generate_response,
+            generate_audio=generate_audio
+        )
 
         # Format emotions
         emotions_list = format_emotions(result.emotions)
@@ -239,16 +287,20 @@ async def process_audio_file(file: UploadFile, generate_response: bool = True) -
             primary_emotion_score=primary.score if primary else 0.0,
             eva_response=result.llm_response,
             llm_model=result.llm_result.model if result.llm_result else None,
+            has_audio=result.audio_response is not None,
+            audio_format=result.tts_result.format if result.tts_result else None,
+            audio_size=len(result.audio_response) if result.audio_response else None,
             processing_times=ProcessingTimes(
                 stt=round(result.stt_result.processing_time, 3),
                 ser=round(result.ser_result.processing_time, 3),
                 llm=round(result.llm_result.latency, 3) if result.llm_result else None,
+                tts=round(result.tts_result.processing_time, 3) if result.tts_result else None,
                 total=round(result.total_processing_time, 3)
             ),
             audio_duration=len(content) / 32000  # Rough estimate
         )
 
-        return response
+        return response, result.audio_response
 
     finally:
         # Cleanup temp file
@@ -278,7 +330,8 @@ async def health_check():
         "pipeline": pipeline is not None,
         "stt": pipeline is not None and pipeline.stt is not None,
         "ser": pipeline is not None and pipeline.ser is not None,
-        "llm": pipeline is not None and pipeline.llm is not None and pipeline.llm.is_available()
+        "llm": pipeline is not None and pipeline.llm is not None and pipeline.llm.is_available(),
+        "tts": pipeline is not None and pipeline.tts is not None and pipeline.tts.is_available()
     }
 
     status = "healthy" if all([components["pipeline"], components["stt"], components["ser"]]) else "degraded"
@@ -305,22 +358,27 @@ async def get_config():
         ser_model_loaded=pipeline.ser is not None,
         llm_backend=pipeline.llm.backend_name if pipeline.llm else None,
         llm_model=pipeline.llm._backend.model if pipeline.llm and pipeline.llm._backend else None,
-        llm_available=pipeline.llm is not None and pipeline.llm.is_available()
+        llm_available=pipeline.llm is not None and pipeline.llm.is_available(),
+        tts_backend=pipeline.tts.backend_name if pipeline.tts else None,
+        tts_available=pipeline.tts is not None and pipeline.tts.is_available()
     )
 
 
 @app.post("/process", response_model=ProcessResponse)
 async def process_audio(
         file: UploadFile = File(..., description="Audio file to process"),
-        generate_response: bool = True
+        generate_response: bool = True,
+        generate_audio: bool = False
 ):
     """
     Process audio file through EVA pipeline
 
     - **file**: Audio file (WAV, MP3, etc.)
     - **generate_response**: Whether to generate LLM response (default: True)
+    - **generate_audio**: Whether to generate TTS audio (default: False)
 
     Returns transcription, emotions, and EVA's empathic response.
+    Use /process/with-audio to get audio response directly.
     """
     # Validate file
     if not file.filename:
@@ -337,7 +395,54 @@ async def process_audio(
         )
 
     try:
-        return await process_audio_file(file, generate_response)
+        response, _ = await process_audio_file(file, generate_response, generate_audio)
+        return response
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/process/with-audio")
+async def process_audio_with_tts(
+        file: UploadFile = File(..., description="Audio file to process")
+):
+    """
+    Process audio file and return audio response
+
+    Full pipeline: STT -> SER -> LLM -> TTS
+    Returns the synthesized audio directly.
+    """
+    # Validate file
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No filename provided")
+
+    allowed_extensions = {".wav", ".mp3", ".m4a", ".ogg", ".flac", ".webm"}
+    suffix = Path(file.filename).suffix.lower()
+
+    if suffix not in allowed_extensions:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type: {suffix}. Allowed: {allowed_extensions}"
+        )
+
+    try:
+        response, audio_data = await process_audio_file(file, True, True)
+
+        if not audio_data:
+            raise HTTPException(status_code=500, detail="TTS generation failed")
+
+        # Return audio as streaming response
+        return StreamingResponse(
+            io.BytesIO(audio_data),
+            media_type=f"audio/{response.audio_format or 'mp3'}",
+            headers={
+                "X-EVA-Transcription": response.transcription[:200],
+                "X-EVA-Response": (response.eva_response or "")[:500],
+                "X-EVA-Emotion": response.primary_emotion,
+                "X-EVA-Processing-Time": str(response.processing_times.total)
+            }
+        )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -479,6 +584,103 @@ async def reload_prompts():
 
 
 # --------------------------
+# TTS Endpoints
+# --------------------------
+@app.post("/synthesize")
+async def synthesize_text(request: TTSRequest):
+    """
+    Synthesize speech from text (standalone TTS)
+
+    - **text**: Text to synthesize
+    - **voice**: Optional voice ID
+    - **language**: Language code (default: vi)
+
+    Returns audio file directly.
+    """
+    global pipeline
+
+    if pipeline is None or pipeline.tts is None or not pipeline.tts.is_available():
+        raise HTTPException(status_code=503, detail="TTS not available")
+
+    try:
+        start_time = time.time()
+        response = pipeline.tts.synthesize(
+            request.text,
+            voice_id=request.voice if request.voice else None
+        )
+        latency = time.time() - start_time
+
+        return StreamingResponse(
+            io.BytesIO(response.audio_data),
+            media_type=f"audio/{response.format}",
+            headers={
+                "X-TTS-Format": response.format,
+                "X-TTS-Sample-Rate": str(response.sample_rate),
+                "X-TTS-Characters": str(len(request.text)),
+                "X-TTS-Latency": f"{latency:.3f}"
+            }
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/synthesize/metadata", response_model=TTSResponse)
+async def synthesize_text_metadata(request: TTSRequest):
+    """
+    Synthesize speech and return metadata only (no audio)
+
+    Useful for checking synthesis without downloading audio.
+    """
+    global pipeline
+
+    if pipeline is None or pipeline.tts is None or not pipeline.tts.is_available():
+        raise HTTPException(status_code=503, detail="TTS not available")
+
+    try:
+        start_time = time.time()
+        response = pipeline.tts.synthesize(request.text)
+        latency = time.time() - start_time
+
+        return TTSResponse(
+            success=True,
+            format=response.format,
+            sample_rate=response.sample_rate,
+            size=len(response.audio_data),
+            characters=len(request.text),
+            latency=round(latency, 3)
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/tts/voices", response_model=List[VoiceInfo])
+async def list_tts_voices(language: Optional[str] = None):
+    """
+    List available TTS voices
+
+    - **language**: Optional language filter (e.g., 'vi', 'en')
+    """
+    global pipeline
+
+    if pipeline is None or pipeline.tts is None or not pipeline.tts.is_available():
+        raise HTTPException(status_code=503, detail="TTS not available")
+
+    try:
+        voices = pipeline.tts.list_voices(language)
+        return [
+            VoiceInfo(
+                voice_id=v.get("voice_id", ""),
+                name=v.get("name", "Unknown"),
+                category=v.get("category"),
+                locale=v.get("locale")
+            )
+            for v in voices
+        ]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# --------------------------
 # Error Handlers
 # --------------------------
 @app.exception_handler(HTTPException)
@@ -522,13 +724,16 @@ def main():
     console.header("EVA API Server")
     print()
     console.info("Endpoints:")
-    console.list_item("POST /process     - Full pipeline (STT + SER + LLM)")
-    console.list_item("POST /transcribe  - Speech-to-text only")
-    console.list_item("POST /emotions    - Emotion analysis only")
-    console.list_item("POST /chat        - Text chat with EVA")
-    console.list_item("GET  /health      - Health check")
-    console.list_item("GET  /config      - Current configuration")
-    console.list_item("GET  /docs        - Interactive API docs")
+    console.item("POST /process", "Full pipeline (STT + SER + LLM)")
+    console.item("POST /process/with-audio", "Full pipeline with TTS audio response")
+    console.item("POST /transcribe", "Speech-to-text only")
+    console.item("POST /emotions", "Emotion analysis only")
+    console.item("POST /chat", "Text chat with EVA")
+    console.item("POST /synthesize", "Text-to-speech synthesis")
+    console.item("GET  /tts/voices", "List available TTS voices")
+    console.item("GET  /health", "Health check")
+    console.item("GET  /config", "Current configuration")
+    console.item("GET  /docs", "Interactive API docs")
     print()
 
     uvicorn.run(
