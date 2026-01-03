@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 from typing import Optional, Dict, List, Tuple
 from contextlib import asynccontextmanager
+from urllib.parse import quote
 import asyncio
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
@@ -430,13 +431,17 @@ async def process_audio_with_tts(
         if not audio_data:
             raise HTTPException(status_code=500, detail="TTS generation failed")
 
+        # URL-encode Vietnamese text for headers (headers only support ASCII)
+        transcription_encoded = quote(response.transcription[:200], safe='')
+        eva_response_encoded = quote((response.eva_response or "")[:500], safe='')
+
         # Return audio as streaming response
         return StreamingResponse(
             io.BytesIO(audio_data),
             media_type=f"audio/{response.audio_format or 'mp3'}",
             headers={
-                "X-EVA-Transcription": response.transcription[:200],
-                "X-EVA-Response": (response.eva_response or "")[:500],
+                "X-EVA-Transcription": transcription_encoded,
+                "X-EVA-Response": eva_response_encoded,
                 "X-EVA-Emotion": response.primary_emotion,
                 "X-EVA-Processing-Time": str(response.processing_times.total)
             }
@@ -445,7 +450,6 @@ async def process_audio_with_tts(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.post("/transcribe", response_model=Dict)
 async def transcribe_only(file: UploadFile = File(...)):
@@ -555,7 +559,7 @@ Your empathic response:"""
 
     try:
         start_time = time.time()
-        response = pipeline.llm.generate(prompt, max_tokens=256, temperature=0.7)
+        response = pipeline.llm.generate(prompt, max_tokens=512, temperature=0.7)
         latency = time.time() - start_time
 
         return {

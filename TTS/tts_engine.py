@@ -18,6 +18,11 @@ from abc import ABC, abstractmethod
 from typing import Optional, Dict, List, Union
 from dataclasses import dataclass
 from pathlib import Path
+import asyncio
+import nest_asyncio
+
+# Apply nest_asyncio to allow nested event loops
+nest_asyncio.apply()
 
 # Add project root to path for console import
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -192,12 +197,12 @@ class ElevenLabsTTS(BaseTTS):
         return self._voices_cache
 
     def synthesize(
-        self,
-        text: str,
-        voice_id: str = None,
-        model: str = None,
-        output_format: str = "mp3_44100_128",
-        **kwargs
+            self,
+            text: str,
+            voice_id: str = None,
+            model: str = None,
+            output_format: str = "mp3_44100_128",
+            **kwargs
     ) -> TTSResponse:
         """
         Synthesize speech from text
@@ -220,21 +225,15 @@ class ElevenLabsTTS(BaseTTS):
         model_id = model or self.model
 
         try:
-            # Generate audio
-            audio_generator = self._client.generate(
+            # New ElevenLabs SDK (v1.x) uses text_to_speech.convert()
+            audio_generator = self._client.text_to_speech.convert(
                 text=text,
-                voice=voice,
-                model=model_id,
+                voice_id=voice,
+                model_id=model_id,
                 output_format=output_format,
-                voice_settings={
-                    "stability": kwargs.get("stability", self.stability),
-                    "similarity_boost": kwargs.get("similarity_boost", self.similarity_boost),
-                    "style": kwargs.get("style", self.style),
-                    "use_speaker_boost": kwargs.get("use_speaker_boost", self.use_speaker_boost)
-                }
             )
 
-            # Collect audio bytes
+            # Collect audio bytes from generator
             audio_bytes = b"".join(audio_generator)
 
             latency = time.time() - start_time

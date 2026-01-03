@@ -100,7 +100,7 @@ class GeminiLLM(BaseLLM):
     def __init__(
         self,
         api_key: str = None,
-        model: str = "gemini-1.5-flash"
+        model: str = "gemini-2.5-flash"
     ):
         self.api_key = api_key or os.getenv("GEMINI_API_KEY")
         self.model = model
