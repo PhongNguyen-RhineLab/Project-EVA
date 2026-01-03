@@ -13,7 +13,38 @@ from typing import Dict, Tuple, Optional
 import sys
 
 # Add parent directory to path
-sys.path.append(str(Path(__file__).parent.parent))
+PROJECT_ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
+try:
+    from console import console, Colors
+except ImportError:
+    # Fallback console
+    class Colors:
+        GREEN = '\033[92m'
+        YELLOW = '\033[93m'
+        RED = '\033[91m'
+        CYAN = '\033[96m'
+        RESET = '\033[0m'
+
+    class Console:
+        def info(self, msg, indent=0): print(f"{'  '*indent}[*] {msg}")
+        def success(self, msg, indent=0): print(f"{'  '*indent}[+] {msg}")
+        def warning(self, msg, indent=0): print(f"{'  '*indent}[!] {msg}")
+        def error(self, msg, indent=0): print(f"{'  '*indent}[-] {msg}")
+        def header(self, title, width=70):
+            print(f"\n{'='*width}")
+            print(f"{title}")
+            print(f"{'='*width}")
+        def subheader(self, title, width=70):
+            print(f"\n{'-'*width}")
+            print(f"{title}")
+            print(f"{'-'*width}")
+        def item(self, label, value, indent=1): print(f"{'  '*indent}{label}: {value}")
+        def emotion(self, name, score, width=20):
+            bar = "█" * int(width * score) + "░" * (width - int(width * score))
+            print(f"      {name:12s} [{bar}] {score*100:5.1f}%")
+    console = Console()
 
 from STT.stt_engine import STTEngine
 from VAE.inference import EmotionRecognizer
@@ -53,12 +84,10 @@ class EVAProcessor:
             ser_device: Device for SER model
             vosk_model_path: Path to Vosk model (if using Vosk)
         """
-        print("\n" + "=" * 70)
-        print("🤖 Initializing EVA Processor")
-        print("=" * 70)
+        console.header("Initializing EVA Processor")
 
         # Initialize STT
-        print("\n1️⃣  Setting up Speech-to-Text...")
+        console.info("[1/2] Setting up Speech-to-Text...")
         self.stt = STTEngine(
             backend=stt_backend,
             whisper_model=stt_model,
@@ -68,75 +97,49 @@ class EVAProcessor:
         )
 
         # Initialize SER
-        print("\n2️⃣  Setting up Speech Emotion Recognition...")
+        console.info("[2/2] Setting up Speech Emotion Recognition...")
         self.ser = EmotionRecognizer(
             checkpoint_path=ser_checkpoint,
             device=ser_device
         )
 
-        print("\n✅ EVA Processor initialized successfully!")
-        print("=" * 70)
+        console.success("EVA Processor initialized successfully!")
+        print("=" * 70 + "\n")
 
-    def process_audio_file(
-        self,
-        audio_path: str,
-        emotion_threshold: float = 0.3
-    ) -> Dict:
+    def process_audio_file(self, audio_path: str) -> Dict:
         """
         Process audio file through full pipeline
 
         Args:
             audio_path: Path to audio file
-            emotion_threshold: Threshold for emotion detection
 
         Returns:
-            dict with:
-                - transcription: STT results (text, language, confidence)
-                - emotions: SER results (emotion dict, dominant, latent)
-                - llm_prompt: Context-aware prompt for LLM
+            Dictionary with transcription, emotions, and LLM prompt
         """
-        audio_path = Path(audio_path)
-        if not audio_path.exists():
-            raise FileNotFoundError(f"Audio file not found: {audio_path}")
+        console.info(f"Processing: {audio_path}")
 
-        print(f"\n🎙️  Processing: {audio_path.name}")
-        print("-" * 70)
+        # Load audio
+        audio, sr = librosa.load(audio_path, sr=16000, mono=True)
 
-        # Step 1: Speech-to-Text
-        print("📝 Step 1: Transcribing audio...")
-        transcription = self.stt.transcribe(str(audio_path))
+        # Run STT
+        console.info("Running Speech-to-Text...", indent=1)
+        transcription = self.stt.transcribe(audio_path)
 
-        print(f"   Text: {transcription['text']}")
-        print(f"   Language: {transcription['language']}")
-        if transcription['confidence']:
-            print(f"   Confidence: {transcription['confidence']:.2%}")
+        # Run SER
+        console.info("Running Emotion Recognition...", indent=1)
+        emotions_dict, latent = self.ser.predict(audio)
 
-        # Step 2: Speech Emotion Recognition
-        print("\n😊 Step 2: Analyzing emotions...")
-        emotions_dict, dominant_emotions, latent = self.ser.predict(
-            str(audio_path),
-            threshold=emotion_threshold
-        )
+        # Get dominant emotions (>50%)
+        dominant_emotions = {
+            k: v for k, v in emotions_dict.items()
+            if v > 0.5
+        }
 
-        # Display top emotions
-        sorted_emotions = sorted(
-            emotions_dict.items(),
-            key=lambda x: x[1],
-            reverse=True
-        )[:3]
-
-        for emotion, prob in sorted_emotions:
-            bar = "█" * int(prob * 20)
-            print(f"   {emotion:12s} [{bar:20s}] {prob * 100:5.1f}%")
-
-        # Step 3: Generate LLM prompt
-        print("\n🤖 Step 3: Generating LLM prompt...")
-        llm_prompt = self.ser.generate_llm_prompt(
+        # Build LLM prompt
+        llm_prompt = self._build_llm_prompt(
             transcription['text'],
             emotions_dict
         )
-
-        print("   ✅ Prompt generated")
 
         # Package results
         results = {
@@ -153,67 +156,38 @@ class EVAProcessor:
 
     def process_audio_array(
         self,
-        audio_array: np.ndarray,
-        sr: int = 16000,
-        emotion_threshold: float = 0.3
+        audio: np.ndarray,
+        sr: int = 16000
     ) -> Dict:
         """
-        Process audio from numpy array
+        Process audio array through full pipeline
 
         Args:
-            audio_array: Audio samples
+            audio: Audio samples as numpy array
             sr: Sample rate
-            emotion_threshold: Threshold for emotion detection
 
         Returns:
-            Same as process_audio_file()
+            Dictionary with transcription, emotions, and LLM prompt
         """
-        print(f"\n🎙️  Processing audio array (sr={sr}Hz)")
-        print("-" * 70)
+        # Resample if needed
+        if sr != 16000:
+            audio = librosa.resample(audio, orig_sr=sr, target_sr=16000)
+            sr = 16000
 
-        # Ensure float32 for compatibility
-        if audio_array.dtype != np.float32:
-            audio_array = audio_array.astype(np.float32)
+        # Run STT
+        transcription = self.stt.transcribe_array(audio, sr=sr)
 
-        # Step 1: STT
-        print("📝 Step 1: Transcribing audio...")
-        transcription = self.stt.transcribe_array(audio_array, sr=sr)
+        # Run SER
+        emotions_dict, latent = self.ser.predict(audio)
 
-        print(f"   Text: {transcription['text']}")
+        # Get dominant emotions
+        dominant_emotions = {
+            k: v for k, v in emotions_dict.items()
+            if v > 0.5
+        }
 
-        # Step 2: SER
-        # Need to save array temporarily for SER
-        import tempfile
-        import soundfile as sf
-
-        print("\n😊 Step 2: Analyzing emotions...")
-
-        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
-            sf.write(tmp.name, audio_array, sr)
-            tmp_path = tmp.name
-
-        try:
-            emotions_dict, dominant_emotions, latent = self.ser.predict(
-                tmp_path,
-                threshold=emotion_threshold
-            )
-        finally:
-            Path(tmp_path).unlink()  # Clean up
-
-        # Display emotions
-        sorted_emotions = sorted(
-            emotions_dict.items(),
-            key=lambda x: x[1],
-            reverse=True
-        )[:3]
-
-        for emotion, prob in sorted_emotions:
-            bar = "█" * int(prob * 20)
-            print(f"   {emotion:12s} [{bar:20s}] {prob * 100:5.1f}%")
-
-        # Step 3: Generate prompt
-        print("\n🤖 Step 3: Generating LLM prompt...")
-        llm_prompt = self.ser.generate_llm_prompt(
+        # Build LLM prompt
+        llm_prompt = self._build_llm_prompt(
             transcription['text'],
             emotions_dict
         )
@@ -231,6 +205,58 @@ class EVAProcessor:
 
         return results
 
+    def _build_llm_prompt(
+        self,
+        text: str,
+        emotions: Dict[str, float]
+    ) -> str:
+        """
+        Build a context-aware prompt for LLM
+
+        Args:
+            text: Transcribed text
+            emotions: Emotion probabilities dict
+
+        Returns:
+            Formatted prompt string
+        """
+        # Sort emotions by probability
+        sorted_emotions = sorted(
+            emotions.items(),
+            key=lambda x: x[1],
+            reverse=True
+        )
+
+        # Get top emotion
+        top_emotion = sorted_emotions[0][0]
+        top_prob = sorted_emotions[0][1]
+
+        # Format emotion context
+        emotion_context = ", ".join([
+            f"{e}: {p*100:.1f}%"
+            for e, p in sorted_emotions[:3]
+        ])
+
+        # Build prompt
+        prompt = f"""You are EVA, an empathic voice assistant designed for emotional support.
+
+CONTEXT:
+- User's detected emotional state: {top_emotion} ({top_prob*100:.1f}% confidence)
+- Emotion breakdown: {emotion_context}
+- User's message: "{text}"
+
+GUIDELINES:
+- Respond with empathy and understanding
+- Acknowledge the user's emotional state naturally
+- If the user seems distressed, offer supportive words
+- Keep responses conversational and warm
+- Do not diagnose or provide medical advice
+- If crisis indicators detected, suggest professional support
+
+YOUR RESPONSE:"""
+
+        return prompt
+
     def format_report(self, results: Dict) -> str:
         """
         Format processing results as a readable report
@@ -243,11 +269,11 @@ class EVAProcessor:
         """
         report = []
         report.append("\n" + "=" * 70)
-        report.append("📊 EVA ANALYSIS REPORT")
+        report.append("EVA ANALYSIS REPORT")
         report.append("=" * 70)
 
         # Transcription
-        report.append("\n📝 TRANSCRIPTION:")
+        report.append("\n[TRANSCRIPTION]")
         report.append(f"   Text: {results['transcription']['text']}")
         report.append(f"   Language: {results['transcription']['language']}")
 
@@ -256,7 +282,7 @@ class EVAProcessor:
             report.append(f"   Confidence: {conf:.2%}")
 
         # Emotions
-        report.append("\n😊 EMOTION ANALYSIS:")
+        report.append("\n[EMOTION ANALYSIS]")
         emotions = results['emotions']['all_emotions']
         sorted_emotions = sorted(
             emotions.items(),
@@ -276,7 +302,7 @@ class EVAProcessor:
                 report.append(f"      - {emotion}: {prob * 100:.1f}%")
 
         # LLM Prompt preview
-        report.append("\n🤖 LLM PROMPT (preview):")
+        report.append("\n[LLM PROMPT] (preview)")
         prompt_lines = results['llm_prompt'].split('\n')[:10]
         for line in prompt_lines:
             report.append(f"   {line}")
@@ -290,74 +316,65 @@ class EVAProcessor:
 
 
 # --------------------------
-# Example Usage
+# Test Function
 # --------------------------
+def test_processor():
+    """Test the EVA processor"""
+    console.header("EVA Processor Test")
+
+    # Check for test file
+    test_audio = PROJECT_ROOT / "test_audio.wav"
+    checkpoint = PROJECT_ROOT / "checkpoints" / "best_model.pth"
+
+    if not checkpoint.exists():
+        console.error(f"Checkpoint not found: {checkpoint}")
+        return
+
+    if not test_audio.exists():
+        console.error(f"Test audio not found: {test_audio}")
+        console.info("Please provide a test audio file")
+        return
+
+    # Initialize
+    processor = EVAProcessor(
+        stt_backend="whisper",
+        stt_model="base",
+        stt_language="vi",
+        ser_checkpoint=str(checkpoint)
+    )
+
+    # Process
+    results = processor.process_audio_file(str(test_audio))
+
+    # Print report
+    report = processor.format_report(results)
+    print(report)
+
+    console.success("Test complete!")
+
+
 if __name__ == "__main__":
-    import argparse
+    import sys
 
-    parser = argparse.ArgumentParser(description="EVA Audio Processor")
-    parser.add_argument(
-        "--audio",
-        type=str,
-        help="Path to audio file",
-        default=None
-    )
-    parser.add_argument(
-        "--stt-backend",
-        type=str,
-        choices=["whisper", "vosk"],
-        default="whisper",
-        help="STT backend"
-    )
-    parser.add_argument(
-        "--stt-model",
-        type=str,
-        default="base",
-        help="Whisper model size"
-    )
-    parser.add_argument(
-        "--ser-checkpoint",
-        type=str,
-        default="checkpoints/best_model.pth",
-        help="Path to SER checkpoint"
-    )
-    parser.add_argument(
-        "--language",
-        type=str,
-        default="vi",
-        help="Language code"
-    )
+    if len(sys.argv) > 1:
+        if sys.argv[1] == "--test":
+            test_processor()
+        else:
+            # Process provided audio file
+            audio_path = sys.argv[1]
 
-    args = parser.parse_args()
+            processor = EVAProcessor(
+                stt_backend="whisper",
+                stt_model="base",
+                stt_language="vi"
+            )
 
-    # Initialize processor
-    eva = EVAProcessor(
-        stt_backend=args.stt_backend,
-        stt_model=args.stt_model,
-        stt_language=args.language,
-        ser_checkpoint=args.ser_checkpoint
-    )
-
-    # Process audio
-    if args.audio:
-        results = eva.process_audio_file(args.audio)
-        print(eva.format_report(results))
+            results = processor.process_audio_file(audio_path)
+            report = processor.format_report(results)
+            print(report)
     else:
-        print("\n⚠️  No audio file provided")
-        print("Usage: python integration.py --audio path/to/audio.wav")
-
-        # Demo with dummy audio
-        print("\n🎭 Running demo with synthetic audio...")
-
-        # Create dummy audio
-        duration = 3
-        sr = 16000
-        t = np.linspace(0, duration, int(sr * duration), dtype=np.float32)
-        audio = (0.3 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)  # A4 note
-
-        try:
-            results = eva.process_audio_array(audio, sr=sr)
-            print(eva.format_report(results))
-        except Exception as e:
-            print(f"\n❌ Demo failed: {e}")
-            print("This is expected if SER checkpoint doesn't exist yet")
+        print("EVA Processor - Audio Analysis Pipeline")
+        print("=" * 50)
+        print("\nUsage:")
+        print("  python eva_processor.py audio.wav    # Process audio file")
+        print("  python eva_processor.py --test       # Run test")
