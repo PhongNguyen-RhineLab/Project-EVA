@@ -105,42 +105,36 @@ class ElevenLabsTTS(BaseTTS):
     """
     ElevenLabs API - Premium quality TTS
 
-    Features:
-    - High-quality neural voices
-    - Vietnamese support
-    - Emotion/style control
-    - Voice cloning (premium)
-
-    Get API key: https://elevenlabs.io/
-
-    Vietnamese voices available:
-    - Use multilingual models for Vietnamese support
+    Updated for elevenlabs SDK v2.x
+    Uses client.text_to_speech.convert() instead of client.generate()
     """
 
-    # Default voices (multilingual v2 supports Vietnamese)
     DEFAULT_VOICES = {
-        "vi": "pNInz6obpgDQGcFmaJgB",  # Adam - good for Vietnamese
-        "en": "21m00Tcm4TlvDq8ikWAM",  # Rachel - default English
+        "vi": "d5HVupAWCwe4e6GvMCAL",
+        "en": "d5HVupAWCwe4e6GvMCAL",
     }
 
-    # Available models
     MODELS = {
-        "multilingual_v2": "eleven_multilingual_v2",  # Best for Vietnamese
+        "multilingual_v2": "eleven_multilingual_v2",
         "multilingual_v1": "eleven_multilingual_v1",
-        "turbo_v2": "eleven_turbo_v2",  # Faster, English only
-        "monolingual": "eleven_monolingual_v1",  # English only
+        "turbo_v2": "eleven_turbo_v2",
+        "turbo_v2_5": "eleven_turbo_v2_5",
+        "monolingual": "eleven_monolingual_v1",
+        "flash_v2": "eleven_flash_v2",
+        "flash_v2_5": "eleven_flash_v2_5",
+        "v3": "eleven_v3",
     }
 
     def __init__(
-        self,
-        api_key: str = None,
-        model: str = "eleven_multilingual_v2",
-        voice_id: str = None,
-        language: str = "vi",
-        stability: float = 0.5,
-        similarity_boost: float = 0.75,
-        style: float = 0.0,
-        use_speaker_boost: bool = True
+            self,
+            api_key: str = None,
+            model: str = "eleven_v3",
+            voice_id: str = "d5HVupAWCwe4e6GvMCAL",
+            language: str = "vi",
+            stability: float = 0.5,
+            similarity_boost: float = 0.75,
+            style: float = 0.0,
+            use_speaker_boost: bool = True
     ):
         self.api_key = api_key or os.getenv("ELEVENLABS_API_KEY")
         self.model = model
@@ -161,7 +155,7 @@ class ElevenLabsTTS(BaseTTS):
         try:
             from elevenlabs.client import ElevenLabs
             self._client = ElevenLabs(api_key=self.api_key)
-            console.success(f"ElevenLabs initialized (model: {self.model})")
+            console.success(f"ElevenLabs initialized (model: {self.model}, voice: {self.voice_id})")
         except ImportError:
             console.warning("Install elevenlabs: pip install elevenlabs")
             self._client = None
@@ -184,14 +178,13 @@ class ElevenLabsTTS(BaseTTS):
                     {
                         "voice_id": voice.voice_id,
                         "name": voice.name,
-                        "category": voice.category,
-                        "labels": voice.labels,
-                        "preview_url": voice.preview_url
+                        "category": getattr(voice, 'category', None),
+                        "labels": getattr(voice, 'labels', None),
                     }
                     for voice in response.voices
                 ]
             except Exception as e:
-                console.error(f"Failed to list voices: {e}")
+                console.warning(f"Failed to list voices: {e}")
                 return []
 
         return self._voices_cache
@@ -205,16 +198,9 @@ class ElevenLabsTTS(BaseTTS):
             **kwargs
     ) -> TTSResponse:
         """
-        Synthesize speech from text
+        Synthesize speech from text using ElevenLabs v3
 
-        Args:
-            text: Text to synthesize
-            voice_id: Override voice ID
-            model: Override model
-            output_format: Output format (mp3_44100_128, pcm_16000, etc.)
-
-        Returns:
-            TTSResponse with audio data
+        Uses the new SDK v2.x syntax: client.text_to_speech.convert()
         """
         if not self.is_available():
             raise RuntimeError("ElevenLabs not available. Set ELEVENLABS_API_KEY.")
@@ -225,12 +211,18 @@ class ElevenLabsTTS(BaseTTS):
         model_id = model or self.model
 
         try:
-            # New ElevenLabs SDK (v1.x) uses text_to_speech.convert()
+            # SDK v2.x syntax - use text_to_speech.convert()
             audio_generator = self._client.text_to_speech.convert(
-                text=text,
                 voice_id=voice,
+                text=text,
                 model_id=model_id,
                 output_format=output_format,
+                voice_settings={
+                    "stability": kwargs.get("stability", self.stability),
+                    "similarity_boost": kwargs.get("similarity_boost", self.similarity_boost),
+                    "style": kwargs.get("style", self.style),
+                    "use_speaker_boost": kwargs.get("use_speaker_boost", self.use_speaker_boost)
+                }
             )
 
             # Collect audio bytes from generator
@@ -270,8 +262,6 @@ class ElevenLabsTTS(BaseTTS):
     def synthesize_stream(self, text: str, **kwargs):
         """
         Stream audio synthesis (for real-time playback)
-
-        Yields audio chunks as they're generated.
         """
         if not self.is_available():
             raise RuntimeError("ElevenLabs not available")
@@ -279,10 +269,11 @@ class ElevenLabsTTS(BaseTTS):
         voice = kwargs.get("voice_id", self.voice_id)
         model_id = kwargs.get("model", self.model)
 
-        audio_stream = self._client.generate(
+        # SDK v2.x streaming syntax
+        audio_stream = self._client.text_to_speech.convert(
+            voice_id=voice,
             text=text,
-            voice=voice,
-            model=model_id,
+            model_id=model_id,
             stream=True
         )
 
