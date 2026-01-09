@@ -520,7 +520,7 @@ class EVAPipeline:
 
         if generate_response and self.llm and self.llm.is_available():
             try:
-                llm_result = self.llm.generate(llm_prompt, max_tokens=256, temperature=0.7)
+                llm_result = self.llm.generate(llm_prompt, max_tokens=512, temperature=0.7)
                 llm_response = llm_result.text
             except Exception as e:
                 console.warning(f"LLM generation failed: {e}")
@@ -535,11 +535,14 @@ class EVAPipeline:
                 tts_response = self.tts.synthesize(llm_response)
                 tts_time = time.time() - tts_start
 
+                audio_duration = len(tts_response.audio_data) / (
+                            tts_response.sample_rate * 2) if tts_response.format == 'pcm' else None
+
                 tts_result = TTSResult(
                     audio_data=tts_response.audio_data,
                     format=tts_response.format,
                     sample_rate=tts_response.sample_rate,
-                    duration=tts_response.duration,
+                    duration=audio_duration,
                     processing_time=tts_time
                 )
                 audio_response = tts_response.audio_data

@@ -100,7 +100,7 @@ class GeminiLLM(BaseLLM):
     def __init__(
         self,
         api_key: str = None,
-        model: str = "gemini-1.5-flash"
+        model: str = "gemini-2.5-flash"
     ):
         self.api_key = api_key or os.getenv("GEMINI_API_KEY")
         self.model = model
@@ -125,7 +125,7 @@ class GeminiLLM(BaseLLM):
     def generate(
         self,
         prompt: str,
-        max_tokens: int = 512,
+        max_tokens: int = 1024,
         temperature: float = 0.7,
         **kwargs
     ) -> LLMResponse:
@@ -196,7 +196,7 @@ class GroqLLM(BaseLLM):
     def generate(
         self,
         prompt: str,
-        max_tokens: int = 512,
+        max_tokens: int = 1024,
         temperature: float = 0.7,
         **kwargs
     ) -> LLMResponse:
@@ -257,7 +257,7 @@ class OpenRouterLLM(BaseLLM):
     def generate(
         self,
         prompt: str,
-        max_tokens: int = 512,
+        max_tokens: int = 1024,
         temperature: float = 0.7,
         **kwargs
     ) -> LLMResponse:
@@ -625,7 +625,7 @@ class LLMEngine:
     def generate(
         self,
         prompt: str,
-        max_tokens: int = 512,
+        max_tokens: int = 1024,
         temperature: float = 0.7,
         **kwargs
     ) -> LLMResponse:

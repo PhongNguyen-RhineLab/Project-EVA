@@ -139,6 +139,23 @@ class ErrorResponse(BaseModel):
 
 
 # --------------------------
+# Chat Request Models (NEW)
+# --------------------------
+class ChatMessage(BaseModel):
+    """Single chat message for conversation history"""
+    role: str  # "user" or "assistant"
+    content: str
+
+
+class ChatRequest(BaseModel):
+    """Chat request with conversation history support"""
+    text: str
+    emotion: Optional[str] = None
+    emotion_score: Optional[float] = None
+    history: Optional[List[ChatMessage]] = None  # Conversation history
+
+
+# --------------------------
 # Global Pipeline Instance
 # --------------------------
 pipeline = None
@@ -201,12 +218,11 @@ async def lifespan(app: FastAPI):
 
     console.success("Server ready!")
     console.divider()
-    print()
 
     yield
 
     # Shutdown
-    console.info("EVA API Server shutting down...")
+    console.info("Shutting down...")
 
 
 # --------------------------
@@ -214,15 +230,15 @@ async def lifespan(app: FastAPI):
 # --------------------------
 app = FastAPI(
     title="EVA API",
-    description="Empathic Voice Assistant - Backend API",
+    description="Empathic Voice Assistant Backend",
     version="1.0.0",
     lifespan=lifespan
 )
 
-# CORS middleware for React Native
+# CORS configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, specify your app's origin
+    allow_origins=["*"],  # In production, restrict this
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -232,9 +248,14 @@ app.add_middleware(
 # --------------------------
 # Helper Functions
 # --------------------------
-def format_emotions(emotions: Dict[str, float]) -> List[EmotionScore]:
-    """Format emotions dict into sorted list"""
-    sorted_emotions = sorted(emotions.items(), key=lambda x: x[1], reverse=True)
+def format_emotions(emotions_dict: Dict[str, float]) -> List[EmotionScore]:
+    """Format emotions dict to list of EmotionScore"""
+    sorted_emotions = sorted(
+        emotions_dict.items(),
+        key=lambda x: x[1],
+        reverse=True
+    )
+
     return [
         EmotionScore(
             emotion=emotion,
@@ -246,17 +267,17 @@ def format_emotions(emotions: Dict[str, float]) -> List[EmotionScore]:
 
 
 async def process_audio_file(
-    file: UploadFile,
-    generate_response: bool = True,
-    generate_audio: bool = False
-) -> tuple[ProcessResponse, Optional[bytes]]:
-    """Process uploaded audio file"""
+        file: UploadFile,
+        generate_response: bool = True,
+        generate_audio: bool = False
+) -> Tuple[ProcessResponse, Optional[bytes]]:
+    """Common audio processing logic"""
     global pipeline
 
     if pipeline is None:
         raise HTTPException(status_code=503, detail="Pipeline not initialized")
 
-    # Save uploaded file temporarily
+    # Save temp file
     suffix = Path(file.filename).suffix if file.filename else ".wav"
 
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
@@ -524,32 +545,57 @@ async def emotions_only(file: UploadFile = File(...)):
 
 
 @app.post("/chat", response_model=Dict)
-async def chat_text(
-        text: str,
-        emotion: Optional[str] = None,
-        emotion_score: Optional[float] = None
-):
+async def chat_text(request: ChatRequest):
     """
     Chat with EVA using text input (no audio)
 
-    Optionally provide emotion context manually.
+    Now supports conversation history for context.
+
+    - **text**: The user's message
+    - **emotion**: Optional detected emotion
+    - **emotion_score**: Optional emotion confidence score
+    - **history**: Optional list of previous messages for context
     """
     global pipeline
 
     if pipeline is None or pipeline.llm is None:
         raise HTTPException(status_code=503, detail="LLM not available")
 
-    # Build simple prompt
-    if emotion and emotion_score:
-        emotion_context = f"User's emotional state: {emotion} ({emotion_score * 100:.0f}%)"
+    # Build emotion context
+    if request.emotion and request.emotion_score:
+        emotion_context = f"User's current emotional state: {request.emotion} ({request.emotion_score * 100:.0f}%)"
     else:
         emotion_context = "User's emotional state: Unknown"
 
-    prompt = f"""{pipeline.prompt_manager.system_context}
+    # Build conversation history string
+    history_str = ""
+    if request.history and len(request.history) > 0:
+        # Limit to last 20 messages (~10 exchanges) to avoid token limits
+        recent_history = request.history[-20:]
+        history_lines = []
+        for msg in recent_history:
+            role_label = "User" if msg.role == "user" else "EVA"
+            history_lines.append(f"{role_label}: {msg.content}")
+        history_str = "\n".join(history_lines)
+
+    # Build prompt with or without history
+    if history_str:
+        prompt = f"""{pipeline.prompt_manager.system_context}
 
 {emotion_context}
 
-User's message: {text}
+Previous conversation:
+{history_str}
+
+User's latest message: {request.text}
+
+Your empathic response (continue the conversation naturally):"""
+    else:
+        prompt = f"""{pipeline.prompt_manager.system_context}
+
+{emotion_context}
+
+User's message: {request.text}
 
 Your empathic response:"""
 
@@ -638,7 +684,10 @@ async def synthesize_text_metadata(request: TTSRequest):
 
     try:
         start_time = time.time()
-        response = pipeline.tts.synthesize(request.text)
+        response = pipeline.tts.synthesize(
+            request.text,
+            voice_id=request.voice if request.voice else None
+        )
         latency = time.time() - start_time
 
         return TTSResponse(
@@ -653,23 +702,19 @@ async def synthesize_text_metadata(request: TTSRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/tts/voices", response_model=List[VoiceInfo])
-async def list_tts_voices(language: Optional[str] = None):
-    """
-    List available TTS voices
-
-    - **language**: Optional language filter (e.g., 'vi', 'en')
-    """
+@app.get("/voices", response_model=List[VoiceInfo])
+async def list_voices():
+    """List available TTS voices"""
     global pipeline
 
-    if pipeline is None or pipeline.tts is None or not pipeline.tts.is_available():
+    if pipeline is None or pipeline.tts is None:
         raise HTTPException(status_code=503, detail="TTS not available")
 
     try:
-        voices = pipeline.tts.list_voices(language)
+        voices = pipeline.tts.list_voices()
         return [
             VoiceInfo(
-                voice_id=v.get("voice_id", ""),
+                voice_id=v.get("voice_id", v.get("id", "unknown")),
                 name=v.get("name", "Unknown"),
                 category=v.get("category"),
                 locale=v.get("locale")
@@ -681,69 +726,21 @@ async def list_tts_voices(language: Optional[str] = None):
 
 
 # --------------------------
-# Error Handlers
-# --------------------------
-@app.exception_handler(HTTPException)
-async def http_exception_handler(request, exc):
-    return JSONResponse(
-        status_code=exc.status_code,
-        content=ErrorResponse(
-            success=False,
-            error=exc.detail
-        ).dict()
-    )
-
-
-@app.exception_handler(Exception)
-async def general_exception_handler(request, exc):
-    return JSONResponse(
-        status_code=500,
-        content=ErrorResponse(
-            success=False,
-            error="Internal server error",
-            detail=str(exc)
-        ).dict()
-    )
-
-
-# --------------------------
 # Main Entry Point
 # --------------------------
-def main():
-    """Run the server"""
+if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="EVA API Server")
-    parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
-    parser.add_argument("--port", type=int, default=8000, help="Port to bind to")
+    parser.add_argument("--host", default="0.0.0.0", help="Host to bind")
+    parser.add_argument("--port", type=int, default=8000, help="Port to bind")
     parser.add_argument("--reload", action="store_true", help="Enable auto-reload")
-    parser.add_argument("--workers", type=int, default=1, help="Number of workers")
 
     args = parser.parse_args()
-
-    console.header("EVA API Server")
-    print()
-    console.info("Endpoints:")
-    console.item("POST /process", "Full pipeline (STT + SER + LLM)")
-    console.item("POST /process/with-audio", "Full pipeline with TTS audio response")
-    console.item("POST /transcribe", "Speech-to-text only")
-    console.item("POST /emotions", "Emotion analysis only")
-    console.item("POST /chat", "Text chat with EVA")
-    console.item("POST /synthesize", "Text-to-speech synthesis")
-    console.item("GET  /tts/voices", "List available TTS voices")
-    console.item("GET  /health", "Health check")
-    console.item("GET  /config", "Current configuration")
-    console.item("GET  /docs", "Interactive API docs")
-    print()
 
     uvicorn.run(
         "eva_api:app",
         host=args.host,
         port=args.port,
-        reload=args.reload,
-        workers=args.workers if not args.reload else 1
+        reload=args.reload
     )
-
-
-if __name__ == "__main__":
-    main()

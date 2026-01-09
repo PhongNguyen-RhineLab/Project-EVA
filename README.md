@@ -24,6 +24,7 @@ Hệ thống EVA kết hợp ba khả năng cốt lõi:
 1. **🎤 Speech-to-Text (STT)** - Chuyển đổi giọng nói thành văn bản để hiểu nội dung câu chuyện
 2. **😊 Speech Emotion Recognition (SER)** - Phân tích cảm xúc phức hợp qua đặc tính âm học (ví dụ: Vui 30%, Buồn 70%)
 3. **🤖 LLM Integration** - Tạo phản hồi thấu cảm dựa trên cả nội dung và trạng thái cảm xúc
+4. **🔊 Text-to-Speech (TTS)** - Phản hồi bằng giọng nói tự nhiên với hỗ trợ tiếng Việt (ElevenLabs, Edge TTS)
 
 ---
 
@@ -165,6 +166,22 @@ Project-EVA/
 │   ├── evaluate_model.py        # Đánh giá mô hình
 │   └── devlog.txt               # Lịch sử phát triển
 │
+├── 📁 STT/                      # Speech-to-Text Module
+│   └── stt_engine.py            # STT engine (Whisper/Vosk)
+│
+├── 📁 LLM/                      # Large Language Model Module
+│   └── llm_engine.py            # LLM engine (Groq, Gemini, etc.)
+│
+├── 📁 TTS/                      # Text-to-Speech Module
+│   ├── __init__.py              # Module exports
+│   └── tts_engine.py            # TTS engine (ElevenLabs, Edge, gTTS)
+│
+├── 📁 Pipeline/                 # EVA Pipeline Orchestrator
+│   └── eva_pipeline.py          # Main pipeline (STT + SER + LLM + TTS)
+│
+├── 📁 API/                      # REST API Server
+│   └── eva_api.py               # FastAPI backend
+│
 ├── 📁 Dataset/                  # Scripts quản lý dataset
 │   ├── download_datasets.py     # Tải RAVDESS, TESS, CREMA-D
 │   ├── prepare_dataset.py       # Chuẩn bị & chia dataset
@@ -172,18 +189,20 @@ Project-EVA/
 │   ├── extract_dataset_colab.py # Cho Google Colab
 │   └── kaggle_organize_datasets.py  # Cho Kaggle
 │
+├── 📁 prompts/                  # Prompt templates
+│   ├── system_context.txt       # System context for LLM
+│   └── response_guidelines.txt  # Emotion-specific guidelines
+│
 ├── 📁 EVA_Dataset/              # Dataset đã xử lý
 │   ├── processed_audio/         # Audio files (.wav)
 │   └── labels/                  # Label files (.csv)
-│       ├── train_labels.csv
-│       ├── val_labels.csv
-│       └── test_labels.csv
 │
 ├── 📁 checkpoints/              # Model checkpoints
 ├── 📁 logs/                     # Training logs
 ├── 📁 plots/                    # Visualization plots
 ├── 📁 evaluation_results/       # Kết quả đánh giá
 │
+├── 📄 .env.example              # Environment variables template
 ├── 📄 requirements.txt          # Dependencies
 └── 📄 README.md                 # Documentation
 ```
@@ -201,9 +220,24 @@ pip install -r requirements.txt
 **Thư viện chính:**
 - `torch>=2.0.0` - Deep learning framework
 - `librosa>=0.10.0` - Audio processing
-- `transformers>=4.35.0` - LLM integration
+- `openai-whisper` - Speech-to-text
+- `groq`, `google-generativeai` - LLM APIs
+- `elevenlabs` - Text-to-speech (premium)
+- `edge-tts` - Text-to-speech (free)
+- `fastapi`, `uvicorn` - REST API
 - `numpy`, `pandas`, `scikit-learn` - Data processing
 - `tqdm`, `matplotlib`, `seaborn` - Utilities & visualization
+
+### 1.5️⃣ Cấu hình API Keys
+
+```bash
+# Copy template và điền API keys
+cp .env.example .env
+
+# Edit .env với API keys của bạn
+# - GROQ_API_KEY hoặc GEMINI_API_KEY (cho LLM)
+# - ELEVENLABS_API_KEY (cho TTS - tùy chọn)
+```
 
 ### 2️⃣ Chuẩn bị Dataset
 
@@ -291,6 +325,88 @@ user_text = "Tôi cảm thấy rất mệt mỏi..."
 prompt = recognizer.generate_llm_prompt(user_text, emotions)
 ```
 
+### 6️⃣ Sử dụng Full Pipeline (STT + SER + LLM + TTS)
+
+```bash
+# Xử lý audio file với output audio
+python Pipeline/eva_pipeline.py audio.wav --output-audio response.mp3
+
+# Sử dụng ElevenLabs TTS
+python Pipeline/eva_pipeline.py audio.wav --tts-backend elevenlabs
+
+# Sử dụng Edge TTS (miễn phí)
+python Pipeline/eva_pipeline.py audio.wav --tts-backend edge
+```
+
+### 7️⃣ Chạy API Server
+
+```bash
+# Khởi động server
+python API/eva_api.py
+
+# Hoặc với uvicorn
+uvicorn API.eva_api:app --host 0.0.0.0 --port 8000 --reload
+```
+
+**API Endpoints:**
+- `POST /process` - Full pipeline (STT + SER + LLM)
+- `POST /process/with-audio` - Full pipeline với TTS audio response
+- `POST /synthesize` - Text-to-speech (standalone)
+- `GET /tts/voices` - Danh sách voices
+- `GET /docs` - Interactive API documentation
+
+---
+
+## 🔊 Module TTS - Text-to-Speech
+
+### Backends hỗ trợ
+
+| Backend | Chất lượng | Vietnamese | API Key | Ghi chú |
+|---------|-----------|------------|---------|---------|
+| **ElevenLabs** | Tốt nhất | ✅ | Required | Multilingual v2 |
+| **Edge TTS** | Tốt | ✅ | Free | Microsoft voices |
+| **gTTS** | Cơ bản | ✅ | Free | Google Translate |
+
+### Cấu hình ElevenLabs (Khuyến nghị)
+
+```bash
+# Lấy API key tại: https://elevenlabs.io/
+export ELEVENLABS_API_KEY=your_key_here
+
+# Hoặc thêm vào .env
+TTS_BACKEND=elevenlabs
+ELEVENLABS_API_KEY=your_key_here
+```
+
+### Sử dụng TTS Engine
+
+```python
+from TTS.tts_engine import TTSEngine
+
+# Khởi tạo (auto-detect backend)
+tts = TTSEngine(language="vi")
+
+# Synthesize text
+response = tts.synthesize("Xin chào! Tôi là EVA.")
+
+# Lưu audio
+with open("output.mp3", "wb") as f:
+    f.write(response.audio_data)
+
+# Hoặc lưu trực tiếp
+tts.synthesize_to_file("Xin chào!", "output.mp3")
+```
+
+### Vietnamese Voices
+
+**ElevenLabs:**
+- Sử dụng model `eleven_multilingual_v2` (tự động)
+- Hỗ trợ nhiều giọng: Adam, Rachel, và nhiều hơn
+
+**Edge TTS:**
+- `vi-VN-HoaiMyNeural` (Female)
+- `vi-VN-NamMinhNeural` (Male)
+
 ---
 
 ## 📊 Tiền xử lý Audio
@@ -345,20 +461,20 @@ duration = 3            # Audio length (seconds)
 
 ## 🔬 Roadmap
 
-### ✅ Giai đoạn 1: SER Model (Hiện tại)
+### ✅ Giai đoạn 1: SER Model
 - [x] Thiết kế kiến trúc Beta-VAE
 - [x] Dataset pipeline (RAVDESS, TESS, CREMA-D)
 - [x] Training với augmentation
 - [x] Evaluation metrics
 
-### 🚧 Giai đoạn 2: End-to-End Prototype
-- [ ] Tích hợp STT (Whisper/Vosk)
-- [ ] LLM integration (Gemma/LLaMA)
-- [ ] Context-aware prompt engine
-- [ ] TTS module
+### ✅ Giai đoạn 2: End-to-End Prototype (Hoàn thành)
+- [x] Tích hợp STT (Whisper/Vosk)
+- [x] LLM integration (Groq, Gemini, OpenRouter, Ollama)
+- [x] Context-aware prompt engine
+- [x] TTS module (ElevenLabs, Edge TTS, gTTS)
+- [x] REST API (FastAPI)
 
-### 🔮 Giai đoạn 3: Production Ready
-- [ ] REST API (FastAPI)
+### 🚧 Giai đoạn 3: Production Ready
 - [ ] Web/Mobile UI
 - [ ] Dataset tiếng Việt
 - [ ] Fine-tuning cho use case cụ thể
@@ -386,8 +502,9 @@ duration = 3            # Audio length (seconds)
 |-----------|-----------|---------|
 | 🧠 **Deep Learning** | PyTorch | 2.0+ |
 | 🎵 **Audio Processing** | Librosa | 0.10+ |
-| 🗣️ **STT** | Whisper / Vosk | TBD |
-| 🤖 **LLM** | Gemma / LLaMA | TBD |
+| 🗣️ **STT** | Whisper / Vosk | Latest |
+| 🤖 **LLM** | Groq, Gemini, OpenRouter, Ollama | Latest |
+| 🔊 **TTS** | ElevenLabs, Edge TTS, gTTS | Latest |
 | 📊 **Data Science** | NumPy, Pandas, Scikit-learn | Latest |
 | 📈 **Visualization** | Matplotlib, Seaborn | Latest |
 
