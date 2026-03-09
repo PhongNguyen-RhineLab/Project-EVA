@@ -176,7 +176,7 @@ def init_pipeline():
         str(PROJECT_ROOT / "checkpoints" / "best_model.pth")
     )
 
-    stt_model = os.getenv("STT_MODEL", "base")
+    stt_model = os.getenv("STT_MODEL", "medium")
     language = os.getenv("LANGUAGE", "vi")
     llm_backend = os.getenv("LLM_BACKEND", None)
     llm_model = os.getenv("LLM_MODEL", None)
@@ -457,7 +457,7 @@ async def process_audio_with_tts(
             media_type=f"audio/{response.audio_format or 'mp3'}",
             headers={
                 "X-EVA-Transcription": response.transcription[:200],
-                "X-EVA-Response": (response.eva_response or "")[:500],
+                "X-EVA-Response": (response.eva_response or "")[:5000],
                 "X-EVA-Emotion": response.primary_emotion,
                 "X-EVA-Processing-Time": str(response.processing_times.total)
             }
@@ -601,7 +601,7 @@ Your empathic response:"""
 
     try:
         start_time = time.time()
-        response = pipeline.llm.generate(prompt, max_tokens=256, temperature=0.7)
+        response = pipeline.llm.generate(prompt, max_tokens=2048, temperature=0.7)
         latency = time.time() - start_time
 
         return {
@@ -634,19 +634,14 @@ async def reload_prompts():
 # --------------------------
 @app.post("/synthesize")
 async def synthesize_text(request: TTSRequest):
-    """
-    Synthesize speech from text (standalone TTS)
-
-    - **text**: Text to synthesize
-    - **voice**: Optional voice ID
-    - **language**: Language code (default: vi)
-
-    Returns audio file directly.
-    """
     global pipeline
 
     if pipeline is None or pipeline.tts is None or not pipeline.tts.is_available():
         raise HTTPException(status_code=503, detail="TTS not available")
+
+    # Guard against empty text
+    if not request.text or not request.text.strip():
+        raise HTTPException(status_code=400, detail="Text cannot be empty")
 
     try:
         start_time = time.time()
@@ -667,7 +662,10 @@ async def synthesize_text(request: TTSRequest):
             }
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # Print full traceback so you can see the real cause in the terminal
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"TTS error: {repr(e)}")
 
 
 @app.post("/synthesize/metadata", response_model=TTSResponse)

@@ -110,8 +110,8 @@ class ElevenLabsTTS(BaseTTS):
     """
 
     DEFAULT_VOICES = {
-        "vi": "d5HVupAWCwe4e6GvMCAL",
-        "en": "d5HVupAWCwe4e6GvMCAL",
+        "vi": "0ggMuQ1r9f9jqBu50nJn",
+        "en": "0ggMuQ1r9f9jqBu50nJn",
     }
 
     MODELS = {
@@ -129,7 +129,7 @@ class ElevenLabsTTS(BaseTTS):
             self,
             api_key: str = None,
             model: str = "eleven_v3",
-            voice_id: str = "d5HVupAWCwe4e6GvMCAL",
+            voice_id: str = "0ggMuQ1r9f9jqBu50nJn",
             language: str = "vi",
             stability: float = 0.5,
             similarity_boost: float = 0.75,

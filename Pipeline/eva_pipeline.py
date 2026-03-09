@@ -386,9 +386,9 @@ class EVAPipeline:
         self,
         ser_checkpoint: str,
         stt_backend: str = "whisper",
-        stt_model: str = "base",
+        stt_model: str = "small",
         language: str = "vi",
-        device: str = "auto",
+        device: str = "cuda",
         emotion_threshold: float = 0.5,
         parallel: bool = True,
         prompts_dir: Path = None,
@@ -520,7 +520,7 @@ class EVAPipeline:
 
         if generate_response and self.llm and self.llm.is_available():
             try:
-                llm_result = self.llm.generate(llm_prompt, max_tokens=512, temperature=0.7)
+                llm_result = self.llm.generate(llm_prompt, max_tokens=2048, temperature=0.7)
                 llm_response = llm_result.text
             except Exception as e:
                 console.warning(f"LLM generation failed: {e}")

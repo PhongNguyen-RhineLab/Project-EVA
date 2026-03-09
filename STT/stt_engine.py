@@ -24,7 +24,7 @@ class WhisperSTT:
     def __init__(
         self,
         model_size: str = "base",
-        device: str = "auto",
+        device: str = "cuda",
         language: str = "vi"  # Vietnamese by default
     ):
         """
