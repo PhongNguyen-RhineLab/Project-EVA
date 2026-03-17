@@ -114,7 +114,7 @@ class GeminiLLM(BaseLLM):
             import google.generativeai as genai
             genai.configure(api_key=self.api_key)
             self._client = genai.GenerativeModel(self.model)
-            console.success(f"Gemini initialized ({self.model})")
+            console.success(f"Gem initialized")
         except ImportError:
             console.warning("Install google-generativeai: pip install google-generativeai")
             self._client = None
